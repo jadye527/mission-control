@@ -19,6 +19,20 @@ interface OwnerOverview {
   }
 }
 
+interface RunEntry {
+  name: string
+  type: 'tmux' | 'cron' | 'collector'
+  owner: string | null
+  status: 'active' | 'stale' | 'stopped'
+  lastProgressTs: number | null
+  lastOutput: string
+}
+
+interface ActiveRunsData {
+  runs: RunEntry[]
+  counts: { active: number; stale: number; stopped: number; total: number }
+}
+
 // SVG icons (16x16, stroke-based, matching codebase style)
 function TargetIcon() {
   return (
@@ -112,16 +126,25 @@ function CountBadge({ count, label, icon, color, onClick }: CountBadgeProps) {
 
 export function OwnerOverviewStrip() {
   const [data, setData] = useState<OwnerOverview | null>(null)
+  const [runsData, setRunsData] = useState<ActiveRunsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(false)
   const navigateToPanel = useNavigateToPanel()
 
   const loadData = useCallback(async () => {
     try {
-      const res = await fetch('/api/owner-overview')
-      if (!res.ok) return
-      const json = await res.json()
-      if (json && !json.error) setData(json)
+      const [overviewRes, runsRes] = await Promise.all([
+        fetch('/api/owner-overview'),
+        fetch('/api/active-runs'),
+      ])
+      if (overviewRes.ok) {
+        const json = await overviewRes.json()
+        if (json && !json.error) setData(json)
+      }
+      if (runsRes.ok) {
+        const json = await runsRes.json()
+        if (json && !json.error) setRunsData(json)
+      }
     } catch {
       // Silently fail — strip is supplementary
     } finally {
@@ -145,7 +168,9 @@ export function OwnerOverviewStrip() {
 
   if (!data) return null
 
-  const hasIssues = data.counts.blocked > 0 || data.counts.staleRuns > 0
+  const activeRunCount = runsData?.counts.active ?? data.counts.activeRuns
+  const staleRunCount = runsData?.counts.stale ?? data.counts.staleRuns
+  const hasIssues = data.counts.blocked > 0 || staleRunCount > 0
 
   return (
     <div className="mx-4 mt-4 space-y-3">
@@ -185,16 +210,16 @@ export function OwnerOverviewStrip() {
             onClick={() => navigateToPanel('tasks')}
           />
           <CountBadge
-            count={data.counts.activeRuns}
+            count={activeRunCount}
             label="Active Runs"
             icon={<TerminalIcon />}
             color="success"
           />
           <CountBadge
-            count={data.counts.staleRuns}
+            count={staleRunCount}
             label="Stale Runs"
             icon={<AlertIcon />}
-            color={data.counts.staleRuns > 0 ? 'danger' : 'default'}
+            color={staleRunCount > 0 ? 'danger' : 'default'}
           />
         </div>
 
@@ -282,35 +307,40 @@ export function OwnerOverviewStrip() {
             )}
           </DetailCard>
 
-          {/* Active runs */}
-          {(data.activeRuns.length > 0 || data.staleRuns.length > 0) && (
-            <DetailCard title="Machine Runs" color={data.counts.staleRuns > 0 ? 'warning' : 'success'}>
+          {/* Active runs — uses /api/active-runs for richer data */}
+          {runsData && runsData.runs.length > 0 && (
+            <DetailCard title="Machine Runs" color={staleRunCount > 0 ? 'warning' : 'success'}>
               <ul className="space-y-2">
-                {data.staleRuns.map(r => (
-                  <li key={`stale-${r.name}`} className="text-sm">
+                {runsData.runs
+                  .sort((a, b) => (a.status === 'stale' ? -1 : 1) - (b.status === 'stale' ? -1 : 1))
+                  .map(r => (
+                  <li key={r.name} className="text-sm">
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-void-crimson shrink-0" />
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        r.status === 'stale' ? 'bg-void-crimson' :
+                        r.status === 'active' ? 'bg-void-mint' :
+                        'bg-muted-foreground'
+                      }`} />
                       <span className="font-medium text-foreground">{r.name}</span>
-                      <span className="text-xs text-void-crimson">stale</span>
+                      <span className={`text-xs ${
+                        r.status === 'stale' ? 'text-void-crimson' :
+                        r.status === 'active' ? 'text-void-mint' :
+                        'text-muted-foreground'
+                      }`}>{r.status}</span>
+                      <span className="text-[10px] text-muted-foreground">{r.type}</span>
+                      {r.owner && (
+                        <span className="text-[10px] text-muted-foreground">({r.owner})</span>
+                      )}
                     </div>
                     {r.lastOutput && (
                       <pre className="text-[10px] text-muted-foreground ml-4 mt-0.5 font-mono truncate max-w-full">
-                        {r.lastOutput.slice(0, 120)}
+                        {r.lastOutput.slice(0, 150)}
                       </pre>
                     )}
-                  </li>
-                ))}
-                {data.activeRuns.map(r => (
-                  <li key={`active-${r.name}`} className="text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-void-mint shrink-0" />
-                      <span className="font-medium text-foreground">{r.name}</span>
-                      <span className="text-xs text-void-mint">active</span>
-                    </div>
-                    {r.lastOutput && (
-                      <pre className="text-[10px] text-muted-foreground ml-4 mt-0.5 font-mono truncate max-w-full">
-                        {r.lastOutput.slice(0, 120)}
-                      </pre>
+                    {r.lastProgressTs && (
+                      <p className="text-[10px] text-muted-foreground ml-4">
+                        Last activity: {new Date(r.lastProgressTs).toLocaleTimeString()}
+                      </p>
                     )}
                   </li>
                 ))}

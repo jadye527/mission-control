@@ -46,6 +46,10 @@ export const createTaskSchema = z.object({
   completed_at: z.number().int().min(0).max(4102444800).optional(),
   tags: z.array(z.string().min(1).max(100)).max(50).default([] as string[]),
   metadata: z.record(z.string(), z.unknown()).default({} as Record<string, unknown>),
+  tests_command: z.string().max(2000).optional(),
+  tests_result: z.string().max(10000).optional(),
+  output_paths: z.array(z.string().max(500)).max(20).optional(),
+  resolution_memo: z.string().max(5000).optional(),
 })
 
 export const updateTaskSchema = createTaskSchema.partial()

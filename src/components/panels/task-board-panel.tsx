@@ -43,6 +43,10 @@ interface Task {
   github_branch?: string
   github_pr_number?: number
   github_pr_state?: string
+  tests_command?: string
+  tests_result?: string
+  output_paths?: string[]
+  resolution_memo?: string
 }
 
 interface Agent {
@@ -1497,6 +1501,42 @@ function TaskDetailModal({
               {reviewError && (
                 <div className="text-xs text-red-400 mb-2">{reviewError}</div>
               )}
+
+              {/* Task evidence fields */}
+              {(task.tests_command || task.tests_result || (task.output_paths && task.output_paths.length > 0) || task.resolution_memo) && (
+                <div className="mb-3 border border-border rounded p-3 space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Task Evidence</p>
+                  {task.resolution_memo && (
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Resolution Memo</p>
+                      <p className="text-xs text-foreground/90 whitespace-pre-wrap">{task.resolution_memo}</p>
+                    </div>
+                  )}
+                  {task.tests_command && (
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Test Command</p>
+                      <pre className="text-xs text-foreground/80 bg-surface-1/60 rounded px-2 py-1 font-mono overflow-x-auto">{task.tests_command}</pre>
+                    </div>
+                  )}
+                  {task.tests_result && (
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Test Result</p>
+                      <pre className="text-xs text-foreground/80 bg-surface-1/60 rounded px-2 py-1 font-mono overflow-x-auto max-h-40 overflow-y-auto">{task.tests_result}</pre>
+                    </div>
+                  )}
+                  {task.output_paths && task.output_paths.length > 0 && (
+                    <div>
+                      <p className="text-[10px] text-muted-foreground uppercase">Output Paths</p>
+                      <ul className="text-xs text-foreground/80 font-mono space-y-0.5">
+                        {task.output_paths.map((p, i) => (
+                          <li key={i}>{p}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {reviews.length > 0 ? (
                 <div className="space-y-2 mb-3">
                   {reviews.map((review) => (
@@ -1506,6 +1546,22 @@ function TaskDetailModal({
                         <span>{new Date(review.created_at * 1000).toLocaleString()}</span>
                       </div>
                       {review.notes && <div className="mt-1">{review.notes}</div>}
+                      {review.evidence && (
+                        <details className="mt-1.5">
+                          <summary className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground">Evidence snapshot</summary>
+                          <div className="mt-1 pl-2 border-l border-border space-y-1">
+                            {review.evidence.resolution_memo && (
+                              <p className="text-[10px] text-foreground/70">{review.evidence.resolution_memo}</p>
+                            )}
+                            {review.evidence.tests_command && (
+                              <pre className="text-[10px] text-foreground/60 font-mono">{review.evidence.tests_command}</pre>
+                            )}
+                            {review.evidence.tests_result && (
+                              <pre className="text-[10px] text-foreground/60 font-mono max-h-24 overflow-y-auto">{review.evidence.tests_result}</pre>
+                            )}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   ))}
                 </div>

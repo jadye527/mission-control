@@ -19,6 +19,7 @@ function mapTaskRow(task: any): Task & { tags: string[]; metadata: Record<string
     ...task,
     tags: task.tags ? JSON.parse(task.tags) : [],
     metadata: task.metadata ? JSON.parse(task.metadata) : {},
+    output_paths: task.output_paths ? JSON.parse(task.output_paths) : [],
     ticket_ref: formatTicketRef(task.project_prefix, task.project_ticket_no),
   }
 }
@@ -266,7 +267,24 @@ export async function PUT(
       fieldsToUpdate.push('metadata = ?');
       updateParams.push(JSON.stringify(metadata));
     }
-    
+    // Evidence fields for quality review
+    if (body.tests_command !== undefined) {
+      fieldsToUpdate.push('tests_command = ?');
+      updateParams.push(body.tests_command);
+    }
+    if (body.tests_result !== undefined) {
+      fieldsToUpdate.push('tests_result = ?');
+      updateParams.push(body.tests_result);
+    }
+    if (body.output_paths !== undefined) {
+      fieldsToUpdate.push('output_paths = ?');
+      updateParams.push(JSON.stringify(body.output_paths));
+    }
+    if (body.resolution_memo !== undefined) {
+      fieldsToUpdate.push('resolution_memo = ?');
+      updateParams.push(body.resolution_memo);
+    }
+
     fieldsToUpdate.push('updated_at = ?');
     updateParams.push(now);
     updateParams.push(taskId, workspaceId);

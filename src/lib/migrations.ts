@@ -1245,6 +1245,35 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_api_keys_expires_at ON agent_api_keys(expires_at)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_api_keys_revoked_at ON agent_api_keys(revoked_at)`)
     }
+  },
+  {
+    id: '041_task_evidence_fields',
+    up(db: Database.Database) {
+      // Add evidence columns to tasks for Aegis quality gate
+      const columns = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>
+      const existing = new Set(columns.map((c) => c.name))
+
+      if (!existing.has('tests_command')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN tests_command TEXT`)
+      }
+      if (!existing.has('tests_result')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN tests_result TEXT`)
+      }
+      if (!existing.has('output_paths')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN output_paths TEXT`) // JSON array
+      }
+      if (!existing.has('resolution_memo')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN resolution_memo TEXT`)
+      }
+
+      // Add evidence_json to quality_reviews so Aegis can see structured evidence
+      const qrColumns = db.prepare(`PRAGMA table_info(quality_reviews)`).all() as Array<{ name: string }>
+      const qrExisting = new Set(qrColumns.map((c) => c.name))
+
+      if (!qrExisting.has('evidence_json')) {
+        db.exec(`ALTER TABLE quality_reviews ADD COLUMN evidence_json TEXT`)
+      }
+    }
   }
 ]
 

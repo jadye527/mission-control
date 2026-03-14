@@ -58,9 +58,14 @@ export async function GET(request: NextRequest) {
       WHERE task_id = ? AND workspace_id = ?
       ORDER BY created_at DESC
       LIMIT 10
-    `).all(taskId, workspaceId)
+    `).all(taskId, workspaceId) as any[]
 
-    return NextResponse.json({ reviews })
+    const mapped = reviews.map(r => ({
+      ...r,
+      evidence: r.evidence_json ? JSON.parse(r.evidence_json) : null,
+    }))
+
+    return NextResponse.json({ reviews: mapped })
   } catch (error) {
     logger.error({ err: error }, 'GET /api/quality-review error')
     return NextResponse.json({ error: 'Failed to fetch quality reviews' }, { status: 500 })
@@ -83,16 +88,24 @@ export async function POST(request: NextRequest) {
     const workspaceId = auth.user.workspace_id ?? 1;
 
     const task = db
-      .prepare('SELECT id, title FROM tasks WHERE id = ? AND workspace_id = ?')
+      .prepare('SELECT id, title, tests_command, tests_result, output_paths, resolution_memo FROM tasks WHERE id = ? AND workspace_id = ?')
       .get(taskId, workspaceId) as any
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
 
+    // Build evidence snapshot from task fields for the review record
+    const evidence = {
+      tests_command: task.tests_command || null,
+      tests_result: task.tests_result || null,
+      output_paths: task.output_paths ? JSON.parse(task.output_paths) : [],
+      resolution_memo: task.resolution_memo || null,
+    }
+
     const result = db.prepare(`
-      INSERT INTO quality_reviews (task_id, reviewer, status, notes, workspace_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(taskId, reviewer, status, notes, workspaceId)
+      INSERT INTO quality_reviews (task_id, reviewer, status, notes, evidence_json, workspace_id)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(taskId, reviewer, status, notes, JSON.stringify(evidence), workspaceId)
 
     db_helpers.logActivity(
       'quality_review',

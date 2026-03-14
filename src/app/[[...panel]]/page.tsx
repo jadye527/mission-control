@@ -36,6 +36,8 @@ import { DebugPanel } from '@/components/panels/debug-panel'
 import { SecurityAuditPanel } from '@/components/panels/security-audit-panel'
 import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
+import QualityReviewPanel from '@/components/panels/quality-review-panel'
+import ActiveRunsPanel from '@/components/panels/active-runs-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
@@ -542,6 +544,10 @@ function ContentRouter({ tab }: { tab: string }) {
       return <NodesPanel />
     case 'security':
       return <SecurityAuditPanel />
+    case 'quality-reviews':
+      return <QualityReviewPanel />
+    case 'active-runs':
+      return <ActiveRunsPanel />
     case 'debug':
       return <DebugPanel />
     case 'exec-approvals':

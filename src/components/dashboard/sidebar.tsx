@@ -60,6 +60,8 @@ const menuItems: MenuItem[] = [
   { id: 'channels', label: 'Channels', icon: '📡', description: 'Messaging platform status' },
   { id: 'nodes', label: 'Nodes', icon: '🖥', description: 'Connected instances' },
   { id: 'exec-approvals', label: 'Approvals', icon: '✅', description: 'Exec approval queue' },
+  { id: 'quality-reviews', label: 'Quality Reviews', icon: '🛡', description: 'Aegis quality gate queue' },
+  { id: 'active-runs', label: 'Active Runs', icon: '⚙', description: 'TMux, cron & collector status' },
   { id: 'debug', label: 'Debug', icon: '🐛', description: 'System diagnostics' },
 ]
 

@@ -46,6 +46,7 @@ const navGroups: NavGroup[] = [
       { id: 'cost-tracker', label: 'Cost Tracker', icon: <TokensIcon />, priority: false },
       { id: 'nodes', label: 'Nodes', icon: <NodesIcon />, priority: false },
       { id: 'active-runs', label: 'Runs', icon: <ActiveRunsIcon />, priority: true },
+      { id: 'agent-performance', label: 'Performance', icon: <PerformanceIcon />, priority: false },
       { id: 'exec-approvals', label: 'Approvals', icon: <ApprovalsIcon />, priority: false },
       { id: 'office', label: 'Office', icon: <OfficeIcon />, priority: false },
     ],
@@ -1502,12 +1503,22 @@ function PluginIcon() {
   )
 }
 
+<<<<<<< HEAD
 function ActiveRunsIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M8 1v4l3-1.5" />
       <circle cx="8" cy="8" r="6.5" />
       <path d="M8 5v3l2 2" />
+    </svg>
+  )
+}
+
+function PerformanceIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="1,12 5,6 9,9 15,3" />
+      <polyline points="11,3 15,3 15,7" />
     </svg>
   )
 }

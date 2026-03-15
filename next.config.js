@@ -7,6 +7,13 @@ const nextConfig = {
   turbopack: {},
   // Transpile ESM-only packages so they resolve correctly in all environments
   transpilePackages: ['react-markdown', 'remark-gfm'],
+  webpack(config) {
+    // Force the client runtime to use globalThis directly so the emitted
+    // bootstrap does not fall back to Function("return this") under CSP.
+    if (!config.output) config.output = {}
+    config.output.globalObject = 'globalThis'
+    return config
+  },
   
   // Security headers
   // Content-Security-Policy is set in src/proxy.ts with a per-request nonce.

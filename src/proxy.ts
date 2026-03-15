@@ -88,8 +88,8 @@ function buildCsp(nonce: string, googleEnabled: boolean): string {
     `base-uri 'self'`,
     `object-src 'none'`,
     `frame-ancestors 'none'`,
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' blob:${googleEnabled ? ' https://accounts.google.com' : ''}`,
-    `style-src 'self' 'nonce-${nonce}'`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-eval'${googleEnabled ? ' https://accounts.google.com' : ''}`,
+    `style-src 'self' 'unsafe-inline'`,
     `connect-src 'self' ws: wss: http://127.0.0.1:* http://localhost:* https://cdn.jsdelivr.net`,
     `img-src 'self' data: blob:${googleEnabled ? ' https://*.googleusercontent.com https://lh3.googleusercontent.com' : ''}`,
     `font-src 'self' data:`,
@@ -100,8 +100,11 @@ function buildCsp(nonce: string, googleEnabled: boolean): string {
 
 function nextResponseWithNonce(request: NextRequest): { response: NextResponse; nonce: string } {
   const nonce = crypto.randomBytes(16).toString('base64')
+  const googleEnabled = !!(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)
+  const csp = buildCsp(nonce, googleEnabled)
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set('x-nonce', nonce)
+  requestHeaders.set('Content-Security-Policy', csp)
   const response = NextResponse.next({
     request: {
       headers: requestHeaders,
@@ -120,6 +123,7 @@ function addSecurityHeaders(response: NextResponse, _request: NextRequest, nonce
   const googleEnabled = !!(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)
   const effectiveNonce = nonce || crypto.randomBytes(16).toString('base64')
   response.headers.set('Content-Security-Policy', buildCsp(effectiveNonce, googleEnabled))
+  response.headers.set('x-nonce', effectiveNonce)
 
   return response
 }

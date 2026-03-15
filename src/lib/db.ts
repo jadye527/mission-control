@@ -493,6 +493,50 @@ export const db_helpers = {
       WHERE ts.task_id = ? AND t.workspace_id = ?
     `).all(taskId, workspaceId) as Array<{ agent_name: string }>;
     return rows.map((row) => row.agent_name);
+  },
+
+  /**
+   * Read the minimal task state used by scheduler/dispatch code paths.
+   */
+  getTaskState: (taskId: number, workspaceId: number = 1) => {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT id, status, retry_count, metadata, assigned_to, title, workspace_id
+      FROM tasks
+      WHERE id = ? AND workspace_id = ?
+    `).get(taskId, workspaceId) as Pick<Task, 'id' | 'status' | 'retry_count' | 'metadata' | 'assigned_to' | 'title'> & { workspace_id: number } | undefined;
+  },
+
+  /**
+   * Atomically transition a task if it is still in one of the expected statuses.
+   */
+  compareAndSetTaskStatus: (
+    taskId: number,
+    workspaceId: number,
+    expectedStatus: Task['status'] | Task['status'][],
+    nextStatus: Task['status'],
+    extraFields: Record<string, unknown> = {}
+  ) => {
+    const db = getDatabase();
+    const expected = Array.isArray(expectedStatus) ? expectedStatus : [expectedStatus];
+    const fields = ['status = ?', 'updated_at = ?'];
+    const params: unknown[] = [nextStatus, Math.floor(Date.now() / 1000)];
+
+    for (const [key, value] of Object.entries(extraFields)) {
+      fields.push(`${key} = ?`);
+      params.push(value ?? null);
+    }
+
+    const placeholders = expected.map(() => '?').join(', ');
+    params.push(taskId, workspaceId, ...expected);
+
+    return db.prepare(`
+      UPDATE tasks
+      SET ${fields.join(', ')}
+      WHERE id = ?
+        AND workspace_id = ?
+        AND status IN (${placeholders})
+    `).run(...params).changes > 0;
   }
 };
 

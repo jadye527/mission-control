@@ -3,9 +3,15 @@ services:
     build: .
     container_name: mission-control
     ports:
-      - "${MC_PORT:-3000}:${PORT:-3000}"
+      - "3002:3000"
     environment:
       - PORT=${PORT:-3000}
+      - MC_COOKIE_SECURE=false
+      - MC_COOKIE_SAMESITE=lax
+      - MC_ALLOW_ANY_HOST=true
+      - OPENCLAW_GATEWAY_HOST=host.docker.internal
+      - OPENCLAW_GATEWAY_PORT=18789
+      - OPENCLAW_GATEWAY_TOKEN=198f103f7fe46a8a951aef395925ff25b669334d15695b11
     env_file:
       - path: .env
         required: false
@@ -33,6 +39,8 @@ services:
 
 volumes:
   mc-data:
+    external: true
+    name: mission-control_mc-data
 
 networks:
   mc-net:

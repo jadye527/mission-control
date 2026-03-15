@@ -250,6 +250,9 @@ Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=PORT=$MC_PORT
+Environment=MISSION_CONTROL_DATA_DIR=$INSTALL_DIR/.data
+Environment=MISSION_CONTROL_DB_PATH=$INSTALL_DIR/.data/mission-control.db
+Environment=MISSION_CONTROL_TOKENS_PATH=$INSTALL_DIR/.data/mission-control-tokens.json
 EnvironmentFile=$INSTALL_DIR/.env
 
 [Install]

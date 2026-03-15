@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeTaskCreateStatus, normalizeTaskUpdateStatus } from '../task-status'
+import {
+  isRecurringTaskInstance,
+  isRecurringTaskTemplate,
+  normalizeTaskCreateStatus,
+  normalizeTaskUpdateStatus,
+  parseTaskMetadata,
+} from '../task-status'
 
 describe('task status normalization', () => {
   it('sets assigned status on create when assignee is present', () => {
@@ -43,5 +49,41 @@ describe('task status normalization', () => {
       })
     ).toBe('in_progress')
   })
-})
 
+  it('parses metadata defensively', () => {
+    expect(parseTaskMetadata('{')).toEqual({})
+    expect(parseTaskMetadata({ recurrence: { enabled: true } })).toEqual({ recurrence: { enabled: true } })
+  })
+
+  it('identifies recurring templates', () => {
+    expect(isRecurringTaskTemplate({
+      recurrence: {
+        enabled: true,
+        cron_expr: '0 9 * * *',
+        parent_task_id: null,
+      },
+    })).toBe(true)
+    expect(isRecurringTaskTemplate({
+      recurrence: {
+        enabled: true,
+        cron_expr: '0 9 * * *',
+        parent_task_id: 42,
+      },
+    })).toBe(false)
+  })
+
+  it('identifies recurring task instances', () => {
+    expect(isRecurringTaskInstance({
+      recurrence: {
+        parent_task_id: 42,
+      },
+    })).toBe(true)
+    expect(isRecurringTaskInstance({
+      recurrence: {
+        enabled: true,
+        cron_expr: '0 9 * * *',
+        parent_task_id: null,
+      },
+    })).toBe(false)
+  })
+})

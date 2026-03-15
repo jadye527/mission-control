@@ -35,6 +35,7 @@ import { DebugPanel } from '@/components/panels/debug-panel'
 import { SecurityAuditPanel } from '@/components/panels/security-audit-panel'
 import { NodesPanel } from '@/components/panels/nodes-panel'
 import { ExecApprovalPanel } from '@/components/panels/exec-approval-panel'
+import { ActiveRunsPanel } from '@/components/panels/active-runs-panel'
 import { ChatPagePanel } from '@/components/panels/chat-page-panel'
 import { ChatPanel } from '@/components/chat/chat-panel'
 import { getPluginPanel } from '@/lib/plugins'
@@ -564,6 +565,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <SecurityAuditPanel />
     case 'debug':
       return <DebugPanel />
+    case 'active-runs':
+      return <ActiveRunsPanel />
     case 'exec-approvals':
       if (isLocal) return <LocalModeUnavailable panel={tab} />
       return <ExecApprovalPanel />

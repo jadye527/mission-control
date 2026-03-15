@@ -277,25 +277,15 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
       // Resolve the gateway agent ID from config, falling back to assigned_to or default
       const reviewAgent = resolveGatewayAgentIdForReview(task)
 
-      const invokeParams = {
-        message: prompt,
-        agentId: reviewAgent,
-        idempotencyKey: `aegis-review-${task.id}-${Date.now()}`,
-        deliver: false,
-      }
-      // Use --expect-final to block until the agent completes and returns the full
-      // response payload (payloads[0].text). The two-step agent → agent.wait pattern
-      // only returns lifecycle metadata (runId/status/timestamps) and never includes
-      // the agent's actual text, so Aegis could never parse a verdict.
+      // Use `openclaw agent` directly — more reliable than gateway WebSocket call
       const finalResult = await runOpenClaw(
-        ['gateway', 'call', 'agent', '--expect-final', '--timeout', '120000', '--params', JSON.stringify(invokeParams), '--json'],
+        ['agent', '--agent', reviewAgent, '--message', prompt, '--timeout', '120'],
         { timeoutMs: 125_000 }
       )
-      const finalPayload = parseGatewayJson(finalResult.stdout)
-        ?? parseGatewayJson(String((finalResult as any)?.stderr || ''))
-      const agentResponse = parseAgentResponse(
-        finalPayload?.result ? JSON.stringify(finalPayload.result) : finalResult.stdout
-      )
+      const agentResponse: AgentResponseParsed = {
+        text: finalResult.stdout.trim() || null,
+        sessionId: null,
+      }
       if (!agentResponse.text) {
         throw new Error('Aegis review returned empty response')
       }
@@ -454,35 +444,15 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       // Step 1: Invoke via gateway
       const gatewayAgentId = resolveGatewayAgentId(task)
-      const dispatchModel = classifyTaskModel(task)
-      // If a model override is determined, prepend it as a system-level hint in the
-      // prompt so the agent's CLAUDE.md / tool config can pick it up. The gateway
-      // `agent` method does not accept a top-level `model` param.
-      const modelHint = dispatchModel
-        ? `[System: use model ${dispatchModel} for this task]\n\n`
-        : ''
-      const invokeParams: Record<string, unknown> = {
-        message: modelHint + prompt,
-        agentId: gatewayAgentId,
-        idempotencyKey: `task-dispatch-${task.id}-${Date.now()}`,
-        deliver: false,
-      }
-
-      // Use --expect-final to block until the agent completes and returns the full
-      // response payload (result.payloads[0].text). The two-step agent → agent.wait
-      // pattern only returns lifecycle metadata and never includes the agent's text.
+      // Use `openclaw agent` directly — more reliable than gateway WebSocket call
       const finalResult = await runOpenClaw(
-        ['gateway', 'call', 'agent', '--expect-final', '--timeout', '120000', '--params', JSON.stringify(invokeParams), '--json'],
+        ['agent', '--agent', gatewayAgentId, '--message', prompt, '--timeout', '120'],
         { timeoutMs: 125_000 }
       )
-      const finalPayload = parseGatewayJson(finalResult.stdout)
-        ?? parseGatewayJson(String((finalResult as any)?.stderr || ''))
 
-      const agentResponse = parseAgentResponse(
-        finalPayload?.result ? JSON.stringify(finalPayload.result) : finalResult.stdout
-      )
-      if (!agentResponse.sessionId && finalPayload?.result?.meta?.agentMeta?.sessionId) {
-        agentResponse.sessionId = finalPayload.result.meta.agentMeta.sessionId
+      const agentResponse: AgentResponseParsed = {
+        text: finalResult.stdout.trim() || null,
+        sessionId: null,
       }
 
       if (!agentResponse.text) {

@@ -24,9 +24,10 @@ interface DispatchableTask {
   metadata?: string | null
 }
 
-const DISPATCH_BATCH_SIZE = 10
-const DISPATCH_CONCURRENCY = 5
+const DISPATCH_BATCH_SIZE = 3
+const DISPATCH_CONCURRENCY = 2
 const AGENT_WAIT_TIMEOUT_MS = 120_000
+const DISPATCH_COOLDOWN_SEC = 300 // 5 min cooldown after failed dispatch
 const REVIEW_BATCH_SIZE = 5
 const REVIEW_CONCURRENCY = 3
 const AEGIS_MAX_RETRIES = 3
@@ -62,7 +63,8 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
     : `TASK-${task.id}`
 
   const lines = [
-    'You have been assigned a task in Mission Control.',
+    '⚠️ THIS IS A DIRECT TASK ASSIGNMENT — NOT A HEARTBEAT. Do NOT reply with HEARTBEAT_OK.',
+    'You have been assigned a task in Mission Control. Execute the task fully and return a detailed response.',
     '',
     `**[${ticket}] ${task.title}**`,
     `Priority: ${task.priority}`,
@@ -361,6 +363,11 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
           ? `Auto-approved after ${nextRetryCount} Aegis rejection cycles to prevent an infinite review loop. Last feedback: ${verdict.notes}`
           : verdict.notes
 
+        db.prepare(`
+          INSERT INTO comments (task_id, author, content, created_at, workspace_id)
+          VALUES (?, 'aegis', ?, ?, ?)
+        `).run(task.id, `Quality Review Approved:\n${approvalNotes}`, nowSec(), task.workspace_id)
+
         const completed = db_helpers.compareAndSetTaskStatus(task.id, task.workspace_id, 'quality_review', 'done', {
           error_message: null,
           feedback_notes: approvalNotes,
@@ -388,7 +395,10 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
         return { id: task.id, verdict: autoApprovedAfterRetries ? 'auto_approved' : 'approved' }
       }
 
-      const reassigned = db_helpers.compareAndSetTaskStatus(task.id, task.workspace_id, 'quality_review', 'assigned', {
+      // Send rejected tasks to 'in_progress' (not 'assigned') to prevent
+      // the dispatch loop: assigned → dispatch → review → reject → assigned.
+      // The agent picks up rejection feedback via heartbeat work items.
+      const reassigned = db_helpers.compareAndSetTaskStatus(task.id, task.workspace_id, 'quality_review', 'in_progress', {
         error_message: `Aegis rejected: ${verdict.notes}`,
         feedback_notes: verdict.notes,
         retry_count: nextRetryCount,
@@ -397,7 +407,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
       if (reassigned) {
         eventBus.broadcast('task.status_changed', {
           id: task.id,
-          status: 'assigned',
+          status: 'in_progress',
           previous_status: 'quality_review',
         })
       }
@@ -455,6 +465,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
     WHERE t.status = 'assigned'
       AND t.assigned_to IS NOT NULL
+      AND t.updated_at < (unixepoch() - ${DISPATCH_COOLDOWN_SEC})
       AND NOT (
         COALESCE(json_extract(t.metadata, '$.recurrence.enabled'), 0) = 1
         AND json_extract(t.metadata, '$.recurrence.parent_task_id') IS NULL
@@ -548,6 +559,12 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       if (!finalText) {
         throw new Error('Agent returned empty response')
+      }
+
+      // Reject heartbeat-only responses — agent didn't actually do the task
+      const normalizedResponse = finalText.trim().toUpperCase()
+      if (normalizedResponse === 'HEARTBEAT_OK' || normalizedResponse === '{"TEXT":"HEARTBEAT_OK"}') {
+        throw new Error('Agent returned HEARTBEAT_OK instead of completing the task. The agent may be in low-burn mode and treating task dispatches as heartbeat pings.')
       }
 
       const truncated = finalText.length > 10_000

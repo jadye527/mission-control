@@ -12,6 +12,7 @@ export interface TaskTemplate {
     priority: string
     tags: string[]
     assigned_to?: string
+    project_name?: string
     metadata?: Record<string, unknown>
   }
 }
@@ -28,6 +29,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'low',
       tags: ['social', 'meme'],
       assigned_to: 'ralph',
+      project_name: 'Social',
       metadata: { complexity: 'routine', model_tier: 'haiku' },
     },
   },
@@ -42,6 +44,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'medium',
       tags: ['social', 'content'],
       assigned_to: 'ralph',
+      project_name: 'Social',
       metadata: { complexity: 'routine', model_tier: 'haiku' },
     },
   },
@@ -56,6 +59,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'medium',
       tags: ['engineering', 'review'],
       assigned_to: 'ralph',
+      project_name: 'Platform',
       metadata: { complexity: 'moderate', model_tier: 'sonnet' },
     },
   },
@@ -70,6 +74,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'medium',
       tags: ['research'],
       assigned_to: 'sentinel',
+      project_name: 'Trading',
       metadata: { complexity: 'complex', model_tier: 'opus' },
     },
   },
@@ -84,6 +89,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'high',
       tags: ['engineering', 'bugfix'],
       assigned_to: 'ralph',
+      project_name: 'Platform',
       metadata: { complexity: 'moderate', model_tier: 'sonnet' },
     },
   },
@@ -98,6 +104,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'medium',
       tags: ['engineering', 'feature'],
       assigned_to: 'ralph',
+      project_name: 'Platform',
       metadata: { complexity: 'complex', model_tier: 'opus' },
     },
   },
@@ -112,6 +119,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'medium',
       tags: ['trading', 'research'],
       assigned_to: 'sentinel',
+      project_name: 'Trading',
       metadata: { complexity: 'moderate', model_tier: 'sonnet' },
     },
   },
@@ -126,6 +134,7 @@ const TEMPLATES: TaskTemplate[] = [
       priority: 'low',
       tags: ['content', 'newsletter'],
       assigned_to: 'ralph',
+      project_name: 'Growth',
       metadata: { complexity: 'routine', model_tier: 'haiku' },
     },
   },

@@ -89,7 +89,6 @@ interface MentionOption {
 const STATUS_COLUMN_KEYS = [
   { key: 'inbox', titleKey: 'colInbox', color: 'bg-secondary text-foreground' },
   { key: 'assigned', titleKey: 'colAssigned', color: 'bg-blue-500/20 text-blue-400' },
-  { key: 'awaiting_owner', titleKey: 'colAwaitingOwner', color: 'bg-orange-500/20 text-orange-400' },
   { key: 'in_progress', titleKey: 'colInProgress', color: 'bg-yellow-500/20 text-yellow-400' },
   { key: 'review', titleKey: 'colReview', color: 'bg-purple-500/20 text-purple-400' },
   { key: 'quality_review', titleKey: 'colQualityReview', color: 'bg-indigo-500/20 text-indigo-400' },

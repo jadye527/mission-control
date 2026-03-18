@@ -593,6 +593,7 @@
     "columnAriaLabel": "Колонка {title}, {count} задач",
     "colInbox": "Входящие",
     "colAssigned": "Назначено",
+    "colAwaitingOwner": "Ожидает владельца",
     "colInProgress": "В работе",
     "colReview": "На проверке",
     "colQualityReview": "Контроль качества",
@@ -671,7 +672,8 @@
     "reviewNotesPlaceholder": "Заметки проверки...",
     "submit": "Отправить",
     "loadingTranscript": "Загрузка транскрипта...",
-    "noSessionMessages": "Нет сообщений сессии"
+    "noSessionMessages": "Нет сообщений сессии",
+    "dunkIt": "Завершить"
   },
   "cronManagement": {
     "title": "Управление cron",
@@ -1823,7 +1825,8 @@
     "delete": "Удалить",
     "save": "Сохранить",
     "loadingSkillContent": "Загрузка SKILL.md...",
-    "noContent": "Нет содержимого."
+    "noContent": "Нет содержимого.",
+    "showAllRoots": "Show all roots"
   },
   "agentSquadPhase3": {
     "title": "Agent Squad",

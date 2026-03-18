@@ -593,6 +593,7 @@
     "columnAriaLabel": "Coluna {title}, {count} tarefas",
     "colInbox": "Caixa de entrada",
     "colAssigned": "Atribuído",
+    "colAwaitingOwner": "Aguardando proprietário",
     "colInProgress": "Em andamento",
     "colReview": "Revisão",
     "colQualityReview": "Revisão de qualidade",
@@ -671,7 +672,8 @@
     "reviewNotesPlaceholder": "Notas de revisão...",
     "submit": "Enviar",
     "loadingTranscript": "Carregando transcrição...",
-    "noSessionMessages": "Sem mensagens de sessão"
+    "noSessionMessages": "Sem mensagens de sessão",
+    "dunkIt": "Concluir"
   },
   "cronManagement": {
     "title": "Gerenciamento de cron",
@@ -1823,7 +1825,8 @@
     "delete": "Excluir",
     "save": "Salvar",
     "loadingSkillContent": "Carregando SKILL.md...",
-    "noContent": "Sem conteúdo."
+    "noContent": "Sem conteúdo.",
+    "showAllRoots": "Show all roots"
   },
   "agentSquadPhase3": {
     "title": "Agent Squad",

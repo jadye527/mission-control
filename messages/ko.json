@@ -593,6 +593,7 @@
     "columnAriaLabel": "{title} 열, {count}개 작업",
     "colInbox": "받은 편지함",
     "colAssigned": "할당됨",
+    "colAwaitingOwner": "소유자 대기 중",
     "colInProgress": "진행 중",
     "colReview": "검토",
     "colQualityReview": "품질 검토",
@@ -671,7 +672,8 @@
     "reviewNotesPlaceholder": "검토 메모...",
     "submit": "제출",
     "loadingTranscript": "기록 로딩 중...",
-    "noSessionMessages": "세션 메시지 없음"
+    "noSessionMessages": "세션 메시지 없음",
+    "dunkIt": "완료"
   },
   "cronManagement": {
     "title": "크론 관리",
@@ -1823,7 +1825,8 @@
     "delete": "삭제",
     "save": "저장",
     "loadingSkillContent": "SKILL.md 로드 중...",
-    "noContent": "내용 없음."
+    "noContent": "내용 없음.",
+    "showAllRoots": "Show all roots"
   },
   "agentSquadPhase3": {
     "title": "Agent Squad",

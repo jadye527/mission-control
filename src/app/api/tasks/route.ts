@@ -8,6 +8,8 @@ import { validateBody, createTaskSchema, bulkUpdateTaskStatusSchema } from '@/li
 import { resolveMentionRecipients } from '@/lib/mentions';
 import { normalizeTaskCreateStatus } from '@/lib/task-status';
 import { pushTaskToGitHub } from '@/lib/github-sync-engine';
+import { pushTaskToGnap } from '@/lib/gnap-sync';
+import { config } from '@/lib/config';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -184,12 +186,9 @@ export async function POST(request: NextRequest) {
       metadata = {}
     } = body;
     const normalizedStatus = normalizeTaskCreateStatus(status, assigned_to)
-    
-    // Check for duplicate title
-    const existingTask = db.prepare('SELECT id FROM tasks WHERE title = ? AND workspace_id = ?').get(title, workspaceId);
-    if (existingTask) {
-      return NextResponse.json({ error: 'Task with this title already exists' }, { status: 409 });
-    }
+
+    // Resolve project_id for the task
+    const resolvedProjectId = resolveProjectId(db, workspaceId, project_id)
     
     const now = Math.floor(Date.now() / 1000);
     const mentionResolution = resolveMentionRecipients(description || '', db, workspaceId);
@@ -203,7 +202,6 @@ export async function POST(request: NextRequest) {
     const resolvedCompletedAt = completed_at ?? (normalizedStatus === 'done' ? now : null)
 
     const createTaskTx = db.transaction(() => {
-      const resolvedProjectId = resolveProjectId(db, workspaceId, project_id)
       db.prepare(`
         UPDATE projects
         SET ticket_counter = ticket_counter + 1, updated_at = unixepoch()
@@ -316,6 +314,12 @@ export async function POST(request: NextRequest) {
           logger.error({ err, taskId }, 'Outbound GitHub sync failed for new task')
         )
       }
+    }
+
+    // Fire-and-forget GNAP sync for new tasks
+    if (config.gnap.enabled && config.gnap.autoSync) {
+      try { pushTaskToGnap(parsedTask as any, config.gnap.repoPath) }
+      catch (err) { logger.warn({ err, taskId }, 'GNAP sync failed for new task') }
     }
 
     // Broadcast to SSE clients

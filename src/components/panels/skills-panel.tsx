@@ -56,6 +56,16 @@ const SOURCE_LABELS: Record<string, string> = {
   'project-agents': '.agents/skills (project)',
   'project-codex': '.codex/skills (project)',
   'openclaw': '~/.openclaw/skills (gateway)',
+  'workspace': '~/.openclaw/workspace/skills',
+}
+
+function getSourceLabel(source: string): string {
+  if (SOURCE_LABELS[source]) return SOURCE_LABELS[source]
+  if (source.startsWith('workspace-')) {
+    const agentName = source.replace('workspace-', '')
+    return `${agentName} workspace`
+  }
+  return source
 }
 
 export function SkillsPanel() {
@@ -65,6 +75,7 @@ export function SkillsPanel() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [activeRoot, setActiveRoot] = useState<string | null>(null)
   const [selectedSkill, setSelectedSkill] = useState<SkillSummary | null>(null)
   const [selectedContent, setSelectedContent] = useState<SkillContentResponse | null>(null)
   const [draftContent, setDraftContent] = useState('')
@@ -142,14 +153,15 @@ export function SkillsPanel() {
   }, [loadSkills])
 
   const filtered = useMemo(() => {
-    const list = skillsList || []
+    let list = skillsList || []
+    if (activeRoot) list = list.filter((s) => s.source === activeRoot)
     const q = query.trim().toLowerCase()
     if (!q) return list
     return list.filter((skill) => {
       const haystack = `${skill.name} ${skill.source} ${skill.description || ''}`.toLowerCase()
       return haystack.includes(q)
     })
-  }, [skillsList, query])
+  }, [skillsList, query, activeRoot])
 
   useEffect(() => {
     if (!selectedSkill) return
@@ -513,6 +525,7 @@ export function SkillsPanel() {
                 {dashboardMode === 'full' && (
                   <option value="openclaw">{SOURCE_LABELS['openclaw']}</option>
                 )}
+                <option value="workspace">{SOURCE_LABELS['workspace']}</option>
               </select>
               <input
                 value={createName}
@@ -540,14 +553,30 @@ export function SkillsPanel() {
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {(skillGroups || []).filter(g => g.skills.length > 0 || ['user-agents', 'user-codex', 'openclaw'].includes(g.source)).map((group) => (
-                  <div key={group.source} className={`rounded-lg border bg-card p-3 ${
-                    group.source === 'openclaw' ? 'border-cyan-500/30' : 'border-border'
-                  }`}>
-                    <div className="text-xs font-medium text-muted-foreground">{SOURCE_LABELS[group.source] || group.source}</div>
+                {activeRoot && (
+                  <button
+                    onClick={() => setActiveRoot(null)}
+                    className="col-span-full text-left text-2xs text-primary hover:underline"
+                  >
+                    {t('showAllRoots')}
+                  </button>
+                )}
+                {(skillGroups || []).filter(g => g.skills.length > 0 || ['user-agents', 'user-codex', 'openclaw', 'workspace'].includes(g.source) || g.source.startsWith('workspace-')).map((group) => (
+                  <button
+                    key={group.source}
+                    onClick={() => setActiveRoot(activeRoot === group.source ? null : group.source)}
+                    className={`rounded-lg border bg-card p-3 text-left transition-colors ${
+                      activeRoot === group.source
+                        ? 'border-primary ring-1 ring-primary/30'
+                        : group.source === 'openclaw' ? 'border-cyan-500/30 hover:border-cyan-500/50'
+                        : group.source.startsWith('workspace-') ? 'border-violet-500/30 hover:border-violet-500/50'
+                        : 'border-border hover:border-border/80'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-muted-foreground">{getSourceLabel(group.source)}</div>
                     <div className="mt-1 text-lg font-semibold text-foreground">{group.skills.length}</div>
                     <div className="mt-1 text-2xs text-muted-foreground truncate">{group.path}</div>
-                  </div>
+                  </button>
                 ))}
               </div>
 
@@ -575,11 +604,13 @@ export function SkillsPanel() {
                             <span className={`text-2xs rounded-full border px-2 py-0.5 ${
                               skill.source === 'openclaw'
                                 ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
-                                : skill.source.startsWith('project-')
-                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                  : 'border-border text-muted-foreground'
+                                : skill.source.startsWith('workspace-')
+                                  ? 'bg-violet-500/10 text-violet-400 border-violet-500/30'
+                                  : skill.source.startsWith('project-')
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                    : 'border-border text-muted-foreground'
                             }`}>
-                              {SOURCE_LABELS[skill.source] || skill.source}
+                              {getSourceLabel(skill.source)}
                             </span>
                             <Button variant="outline" size="xs" onClick={() => checkSecurity(skill)}>
                               {t('scan')}
@@ -641,6 +672,7 @@ export function SkillsPanel() {
                 {dashboardMode === 'full' && (
                   <option value="openclaw">{SOURCE_LABELS['openclaw']}</option>
                 )}
+                <option value="workspace">{SOURCE_LABELS['workspace']}</option>
               </select>
             </div>
           </div>

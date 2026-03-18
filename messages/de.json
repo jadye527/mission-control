@@ -593,6 +593,7 @@
     "columnAriaLabel": "Spalte {title}, {count} Aufgaben",
     "colInbox": "Posteingang",
     "colAssigned": "Zugewiesen",
+    "colAwaitingOwner": "Wartet auf Besitzer",
     "colInProgress": "In Bearbeitung",
     "colReview": "Überprüfung",
     "colQualityReview": "Qualitätsprüfung",
@@ -671,7 +672,8 @@
     "reviewNotesPlaceholder": "Prüfnotizen...",
     "submit": "Einreichen",
     "loadingTranscript": "Transkript laden...",
-    "noSessionMessages": "Keine Sitzungsnachrichten"
+    "noSessionMessages": "Keine Sitzungsnachrichten",
+    "dunkIt": "Erledigen"
   },
   "cronManagement": {
     "title": "Cron-Verwaltung",
@@ -1823,7 +1825,8 @@
     "delete": "Löschen",
     "save": "Speichern",
     "loadingSkillContent": "SKILL.md wird geladen...",
-    "noContent": "Kein Inhalt."
+    "noContent": "Kein Inhalt.",
+    "showAllRoots": "Show all roots"
   },
   "agentSquadPhase3": {
     "title": "Agent Squad",

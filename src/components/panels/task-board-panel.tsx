@@ -89,12 +89,71 @@ interface MentionOption {
 const STATUS_COLUMN_KEYS = [
   { key: 'inbox', titleKey: 'colInbox', color: 'bg-secondary text-foreground' },
   { key: 'assigned', titleKey: 'colAssigned', color: 'bg-blue-500/20 text-blue-400' },
+  { key: 'awaiting_owner', titleKey: 'colAwaitingOwner', color: 'bg-orange-500/20 text-orange-400' },
   { key: 'in_progress', titleKey: 'colInProgress', color: 'bg-yellow-500/20 text-yellow-400' },
   { key: 'review', titleKey: 'colReview', color: 'bg-purple-500/20 text-purple-400' },
   { key: 'quality_review', titleKey: 'colQualityReview', color: 'bg-indigo-500/20 text-indigo-400' },
   { key: 'awaiting_owner', titleKey: 'colAwaitingOwner', color: 'bg-amber-500/20 text-amber-400' },
   { key: 'done', titleKey: 'colDone', color: 'bg-green-500/20 text-green-400' },
 ]
+
+const AWAITING_OWNER_KEYWORDS = [
+  'waiting for', 'waiting on', 'needs human', 'manual action',
+  'account creation', 'browser login', 'approval needed',
+  'owner action', 'human required', 'blocked on owner',
+  'awaiting owner', 'awaiting human', 'needs owner',
+]
+
+function detectAwaitingOwner(task: Task): boolean {
+  if (task.status === 'awaiting_owner') return true
+  if (task.status !== 'assigned' && task.status !== 'in_progress') return false
+  const text = `${task.title} ${task.description || ''}`.toLowerCase()
+  return AWAITING_OWNER_KEYWORDS.some(kw => text.includes(kw))
+}
+
+/** Build a human-readable label for a session key like "agent:nefes:telegram-group-123" */
+function formatSessionLabel(s: { key: string; channel?: string; kind?: string; label?: string }): string {
+  if (s.label) return s.label
+  // Extract the identifier part after the last colon: "agent:name:main" → "main"
+  const parts = (s.key || '').split(':')
+  const identifier = parts.length > 2 ? parts.slice(2).join(':') : s.key
+  const channel = s.channel || ''
+  if (channel && identifier !== 'main') {
+    return `${channel} (${identifier})`
+  }
+  if (channel) return `${channel} (${s.kind || 'default'})`
+  return identifier || s.key
+}
+
+/** Fetch active gateway sessions for a given agent name. */
+function useAgentSessions(agentName: string | undefined) {
+  const [sessions, setSessions] = useState<Array<{ key: string; id: string; channel?: string; kind?: string; label?: string; displayLabel: string }>>([])
+  useEffect(() => {
+    if (!agentName) { setSessions([]); return }
+    let cancelled = false
+    fetch('/api/sessions')
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return
+        const all = (data.sessions || []) as Array<{ key: string; id: string; agent?: string; channel?: string; kind?: string; label?: string; active?: boolean }>
+        const filtered = all.filter(s =>
+          s.agent?.toLowerCase() === agentName.toLowerCase() ||
+          s.key?.toLowerCase().includes(agentName.toLowerCase())
+        )
+        setSessions(filtered.map(s => ({
+          key: s.key,
+          id: s.id,
+          channel: s.channel,
+          kind: s.kind,
+          label: s.label,
+          displayLabel: formatSessionLabel(s),
+        })))
+      })
+      .catch(() => { if (!cancelled) setSessions([]) })
+    return () => { cancelled = true }
+  }, [agentName])
+  return sessions
+}
 
 const priorityColors: Record<string, string> = {
   low: 'border-l-green-500',
@@ -267,6 +326,57 @@ function MentionTextarea({
   )
 }
 
+type DunkPhase = 'idle' | 'success' | 'error' | 'dismissing'
+
+function DunkItButton({ taskId, onDunked }: { taskId: number; onDunked: (id: number) => void }) {
+  const t = useTranslations('taskBoard')
+  const [phase, setPhase] = useState<DunkPhase>('idle')
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (phase !== 'idle') return
+    try {
+      const res = await fetch(`/api/tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'done' }),
+      })
+      if (!res.ok) throw new Error('Failed')
+      setPhase('success')
+      setTimeout(() => {
+        setPhase('dismissing')
+        setTimeout(() => onDunked(taskId), 400)
+      }, 600)
+    } catch {
+      setPhase('error')
+      setTimeout(() => setPhase('idle'), 1500)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={phase !== 'idle' && phase !== 'error'}
+      title={t('dunkIt')}
+      style={{
+        padding: '2px 8px',
+        fontSize: '11px',
+        borderRadius: '4px',
+        border: '1px solid',
+        cursor: phase === 'idle' ? 'pointer' : 'default',
+        transition: 'all 0.3s ease',
+        transform: phase === 'success' ? 'scale(1.15)' : phase === 'dismissing' ? 'scale(0.8) translateY(-10px)' : 'scale(1)',
+        opacity: phase === 'dismissing' ? 0 : 1,
+        borderColor: phase === 'success' ? 'rgb(34 197 94 / 0.5)' : phase === 'error' ? 'rgb(239 68 68 / 0.5)' : 'hsl(var(--border))',
+        backgroundColor: phase === 'success' ? 'rgb(34 197 94 / 0.15)' : phase === 'error' ? 'rgb(239 68 68 / 0.15)' : 'transparent',
+        color: phase === 'success' ? 'rgb(34 197 94)' : phase === 'error' ? 'rgb(239 68 68)' : 'inherit',
+      }}
+    >
+      {phase === 'success' ? '!' : phase === 'error' ? '!!' : phase === 'dismissing' ? '!' : 'Dunk'}
+    </button>
+  )
+}
+
 interface SpawnFormData {
   task: string
   model: string
@@ -301,6 +411,8 @@ export function TaskBoardPanel() {
     timeoutSeconds: 300
   })
   const [isSpawning, setIsSpawning] = useState(false)
+  const [gnapStatus, setGnapStatus] = useState<{ enabled: boolean; taskCount?: number; lastSync?: string } | null>(null)
+  const [gnapSyncing, setGnapSyncing] = useState(false)
   const isLocal = dashboardMode === 'local'
   const dragCounter = useRef(0)
   const selectedTaskIdFromUrl = Number.parseInt(searchParams.get('taskId') || '', 10)
@@ -390,6 +502,26 @@ export function TaskBoardPanel() {
     fetchData()
   }, [fetchData])
 
+  // Fetch GNAP status
+  useEffect(() => {
+    fetch('/api/gnap')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setGnapStatus(data) })
+      .catch(() => {})
+  }, [])
+
+  const handleGnapSync = useCallback(async () => {
+    setGnapSyncing(true)
+    try {
+      const res = await fetch('/api/gnap?action=sync', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setGnapStatus(prev => prev ? { ...prev, taskCount: data.pushed, lastSync: data.lastSync } : prev)
+      }
+    } catch { /* ignore */ }
+    finally { setGnapSyncing(false) }
+  }, [])
+
   // Sync global activeProject into local projectFilter
   useEffect(() => {
     const newFilter = activeProject ? String(activeProject.id) : 'all'
@@ -419,9 +551,12 @@ export function TaskBoardPanel() {
   // Poll as SSE fallback — pauses when SSE is delivering events
   useSmartPoll(fetchData, 30000, { pauseWhenSseConnected: true })
 
-  // Group tasks by status
+  // Group tasks by status, overriding for awaiting_owner detection
   const tasksByStatus = statusColumns.reduce((acc, column) => {
-    acc[column.key] = tasks.filter(task => task.status === column.key)
+    acc[column.key] = tasks.filter(task => {
+      const effectiveStatus = detectAwaitingOwner(task) ? 'awaiting_owner' : task.status
+      return effectiveStatus === column.key
+    })
     return acc
   }, {} as Record<string, Task[]>)
 
@@ -641,6 +776,24 @@ export function TaskBoardPanel() {
       <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-bold text-foreground">{t('title')}</h2>
+          {gnapStatus?.enabled && (
+            <button
+              onClick={handleGnapSync}
+              disabled={gnapSyncing}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded-full bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors disabled:opacity-50"
+              title={gnapStatus.lastSync ? `Last sync: ${gnapStatus.lastSync}` : 'Click to sync'}
+            >
+              GNAP
+              {gnapStatus.taskCount != null && (
+                <span className="text-emerald-400/70">{gnapStatus.taskCount}</span>
+              )}
+              {gnapSyncing && (
+                <svg className="w-3 h-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M8 1.5a6.5 6.5 0 1 1-4.5 2" />
+                </svg>
+              )}
+            </button>
+          )}
           <div className="relative">
             <select
               value={projectFilter}
@@ -795,7 +948,7 @@ export function TaskBoardPanel() {
             </div>
 
             {/* Column Body */}
-            <div className="flex-1 p-2.5 space-y-2.5 min-h-32 overflow-y-auto">
+            <div className="flex-1 p-2.5 space-y-2.5 min-h-32 h-full overflow-y-auto">
               {tasksByStatus[column.key]?.map(task => (
                 <div
                   key={task.id}
@@ -883,6 +1036,11 @@ export function TaskBoardPanel() {
                               Aegis
                             </span>
                           )}
+                          {detectAwaitingOwner(task) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30 font-mono">
+                              {t('colAwaitingOwner')}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -907,6 +1065,9 @@ export function TaskBoardPanel() {
                       )}
                     </span>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      {task.status !== 'done' && (
+                        <DunkItButton taskId={task.id} onDunked={() => fetchData()} />
+                      )}
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
                         task.priority === 'critical' ? 'bg-red-500/20 text-red-400' :
                         task.priority === 'high' ? 'bg-orange-500/20 text-orange-400' :
@@ -1254,11 +1415,18 @@ function TaskDetailModal({
                   if (!confirm(t('deleteTaskConfirm', { title: task.title }))) return
                   try {
                     const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
-                    if (!res.ok) throw new Error('Failed to delete task')
-                    onDelete()
+                    if (!res.ok) {
+                      const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
+                      throw new Error(errorData.error || 'Failed to delete task')
+                    }
+                    // Close modal immediately on successful deletion
+                    // SSE will handle the task.deleted event and remove the task from the UI
                     onClose()
-                  } catch {
-                    // task.deleted SSE will sync state if needed
+                  } catch (error) {
+                    // Show error to user
+                    const errorMessage = error instanceof Error ? error.message : 'Failed to delete task'
+                    alert(errorMessage)
+                    // Don't close modal on error
                   }
                 }}
               >
@@ -1676,6 +1844,7 @@ function ClaudeCodeTasksSection() {
     s === 'completed' ? 'text-green-400' :
     s === 'in_progress' ? 'text-blue-400' :
     s === 'blocked' ? 'text-red-400' :
+    s === 'awaiting_owner' ? 'text-orange-400' :
     'text-muted-foreground'
 
   return (
@@ -1812,8 +1981,10 @@ function CreateTaskModal({
     project_id: projects[0]?.id ? String(projects[0].id) : '',
     assigned_to: '',
     tags: '',
+    target_session: '',
   })
   const t = useTranslations('taskBoard')
+  const agentSessions = useAgentSessions(formData.assigned_to || undefined)
   const [isRecurring, setIsRecurring] = useState(false)
   const [scheduleInput, setScheduleInput] = useState('')
   const [parsedSchedule, setParsedSchedule] = useState<{ cronExpr: string; humanReadable: string } | null>(null)
@@ -1854,6 +2025,9 @@ function CreateTaskModal({
         spawn_count: 0,
         parent_task_id: null,
       }
+    }
+    if (formData.target_session) {
+      metadata.target_session = formData.target_session
     }
 
     try {
@@ -1954,7 +2128,7 @@ function CreateTaskModal({
               <select
                 id="create-assignee"
                 value={formData.assigned_to}
-                onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value, target_session: '' }))}
                 className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
               >
                 <option value="">{t('unassigned')}</option>
@@ -1965,6 +2139,26 @@ function CreateTaskModal({
                 ))}
               </select>
             </div>
+
+            {formData.assigned_to && agentSessions.length > 0 && (
+              <div>
+                <label htmlFor="create-target-session" className="block text-sm text-muted-foreground mb-1">Target Session</label>
+                <select
+                  id="create-target-session"
+                  value={formData.target_session}
+                  onChange={(e) => setFormData(prev => ({ ...prev, target_session: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                >
+                  <option value="">New session (default)</option>
+                  {agentSessions.map(s => (
+                    <option key={s.key} value={s.key}>
+                      {s.displayLabel}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground mt-1">Send task to an existing agent session instead of creating a new one.</p>
+              </div>
+            )}
 
             <div>
               <label htmlFor="create-tags" className="block text-sm text-muted-foreground mb-1">{t('fieldTags')}</label>
@@ -2055,8 +2249,10 @@ function EditTaskModal({
     project_id: task.project_id ? String(task.project_id) : (projects[0]?.id ? String(projects[0].id) : ''),
     assigned_to: task.assigned_to || '',
     tags: task.tags ? task.tags.join(', ') : '',
+    target_session: task.metadata?.target_session || '',
   })
   const mentionTargets = useMentionTargets()
+  const agentSessions = useAgentSessions(formData.assigned_to || undefined)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -2064,6 +2260,14 @@ function EditTaskModal({
     if (!formData.title.trim()) return
 
     try {
+      const existingMeta = task.metadata || {}
+      const updatedMeta = { ...existingMeta }
+      if (formData.target_session) {
+        updatedMeta.target_session = formData.target_session
+      } else {
+        delete updatedMeta.target_session
+      }
+
       const response = await fetch(`/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -2071,7 +2275,8 @@ function EditTaskModal({
           ...formData,
           project_id: formData.project_id ? Number(formData.project_id) : undefined,
           tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
-          assigned_to: formData.assigned_to || undefined
+          assigned_to: formData.assigned_to || undefined,
+          metadata: updatedMeta,
         })
       })
 
@@ -2177,7 +2382,7 @@ function EditTaskModal({
               <select
                 id="edit-assignee"
                 value={formData.assigned_to}
-                onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value }))}
+                onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value, target_session: '' }))}
                 className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
               >
                 <option value="">{t('unassigned')}</option>
@@ -2188,6 +2393,26 @@ function EditTaskModal({
                 ))}
               </select>
             </div>
+
+            {formData.assigned_to && agentSessions.length > 0 && (
+              <div>
+                <label htmlFor="edit-target-session" className="block text-sm text-muted-foreground mb-1">Target Session</label>
+                <select
+                  id="edit-target-session"
+                  value={formData.target_session}
+                  onChange={(e) => setFormData(prev => ({ ...prev, target_session: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                >
+                  <option value="">New session (default)</option>
+                  {agentSessions.map(s => (
+                    <option key={s.key} value={s.key}>
+                      {s.displayLabel}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-muted-foreground mt-1">Send task to an existing agent session instead of creating a new one.</p>
+              </div>
+            )}
 
             <div>
               <label htmlFor="edit-tags" className="block text-sm text-muted-foreground mb-1">{t('fieldTags')}</label>

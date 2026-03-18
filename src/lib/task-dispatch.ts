@@ -374,6 +374,11 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
     WHERE t.status = 'assigned'
       AND t.assigned_to IS NOT NULL
+      AND t.id NOT IN (
+        SELECT td.task_id FROM task_dependencies td
+        JOIN tasks bt ON bt.id = td.depends_on_task_id
+        WHERE bt.status != 'done'
+      )
     ORDER BY
       CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       t.created_at ASC

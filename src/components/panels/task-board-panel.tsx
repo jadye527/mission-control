@@ -1155,6 +1155,7 @@ export function TaskBoardPanel() {
         <CreateTaskModal
           agents={agents}
           projects={projects}
+          existingTasks={tasks}
           onClose={() => setShowCreateModal(false)}
           onCreated={fetchData}
         />
@@ -1963,13 +1964,15 @@ function HermesCronSection() {
 
 // Create Task Modal Component (placeholder)
 function CreateTaskModal({
-  agents, 
+  agents,
   projects,
-  onClose, 
-  onCreated 
-}: { 
+  existingTasks,
+  onClose,
+  onCreated
+}: {
   agents: Agent[]
   projects: Project[]
+  existingTasks: Task[]
   onClose: () => void
   onCreated: () => void
 }) {
@@ -1997,12 +2000,31 @@ function CreateTaskModal({
 
   const applyTemplate = (tpl: typeof templates[number]) => {
     const d = tpl.defaults as Record<string, unknown>
+
+    // Auto-sequence: if title already exists in tasks, append #N
+    let title = (d.title as string) || ''
+    if (title) {
+      const existing = existingTasks.filter(t => t.title === title || t.title.startsWith(title + ' #'))
+      if (existing.length > 0) {
+        title = `${title} #${existing.length + 1}`
+      }
+    }
+
+    // Auto-match project by name
+    let projectId = ''
+    const projectName = d.project_name as string | undefined
+    if (projectName) {
+      const match = projects.find(p => p.name.toLowerCase() === projectName.toLowerCase())
+      if (match) projectId = String(match.id)
+    }
+
     setFormData(prev => ({
       ...prev,
-      title: (d.title as string) || prev.title,
+      title,
       description: (d.description as string) || prev.description,
       priority: (d.priority as Task['priority']) || prev.priority,
       assigned_to: (d.assigned_to as string) || prev.assigned_to,
+      project_id: projectId || prev.project_id,
       tags: Array.isArray(d.tags) ? (d.tags as string[]).join(', ') : prev.tags,
     }))
   }

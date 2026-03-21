@@ -512,9 +512,11 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           idempotencyKey: `task-dispatch-${task.id}-${Date.now()}`,
           deliver: false,
         }
-        // Route to appropriate model tier based on task complexity.
-        // null = no override, agent uses its own configured default model.
-        if (dispatchModel) invokeParams.model = dispatchModel
+        // Model override intentionally disabled for gateway agent calls.
+        // Current gateway validation rejects arbitrary top-level `model` params,
+        // which causes retry loops and stale in_progress tasks. Keep classification
+        // logic in place for future compatibility, but do not send it here.
+        void dispatchModel
 
         // Use --expect-final to block until the agent completes and returns the full
         // response payload (result.payloads[0].text). The two-step agent → agent.wait

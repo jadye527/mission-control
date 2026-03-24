@@ -1439,50 +1439,45 @@ const migrations: Migration[] = [
   },
   {
     id: '044_mvp_user_org_fields',
-  up(db: Database.Database) {
-    // Add email column to users if missing
-    const userCols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
-    if (!userCols.some((c) => c.name === 'email')) {
-      db.exec(`ALTER TABLE users ADD COLUMN email TEXT`)
-      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
+    up(db: Database.Database) {
+      const userCols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
+      if (!userCols.some((c) => c.name === 'email')) {
+        db.exec(`ALTER TABLE users ADD COLUMN email TEXT`)
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
+      }
+      if (!userCols.some((c) => c.name === 'org_id')) {
+        db.exec(`ALTER TABLE users ADD COLUMN org_id INTEGER`)
+      }
+      db.exec(`
+        CREATE VIEW IF NOT EXISTS orgs AS
+        SELECT
+          id,
+          display_name AS name,
+          plan_tier     AS plan,
+          created_at
+        FROM tenants
+      `)
     }
-
-    // Add org_id column to users (FK → tenants.id) if missing
-    if (!userCols.some((c) => c.name === 'org_id')) {
-      db.exec(`ALTER TABLE users ADD COLUMN org_id INTEGER`)
+  },
+  {
+    id: '045_password_reset_tokens',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_token_hash ON password_reset_tokens(token_hash)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_user_id ON password_reset_tokens(user_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at)`)
     }
-
-    // Create orgs view as alias for tenants with MVP-expected field names
-    db.exec(`
-      CREATE VIEW IF NOT EXISTS orgs AS
-      SELECT
-        id,
-        display_name AS name,
-        plan_tier     AS plan,
-        created_at
-      FROM tenants
-    `)
   }
-},
-{
-  id: '045_password_reset_tokens',
-  up(db: Database.Database) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS password_reset_tokens (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        expires_at INTEGER NOT NULL,
-        used_at INTEGER,
-        created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_token_hash ON password_reset_tokens(token_hash)`)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_user_id ON password_reset_tokens(user_id)`)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at)`)
-  }
-}
 ]
 
 export function runMigrations(db: Database.Database) {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getUserFromRequest, getAllUsers, createUser, updateUser, deleteUser, getUserById, requireRole } from '@/lib/auth'
+import { getUserFromRequest, getAllUsers, createUser, updateUser, deleteUser, getUserById, listUsersForTenant, requireRole } from '@/lib/auth'
 import { logAuditEvent } from '@/lib/db'
 import { validateBody, createUserSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
@@ -17,9 +17,32 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
   }
 
-  const users = getAllUsers()
-  const workspaceId = user.workspace_id ?? 1
-  return NextResponse.json({ users: users.filter((u) => (u.workspace_id ?? 1) === workspaceId) })
+  const tenantId = user.tenant_id ?? 1
+  const users = listUsersForTenant(tenantId)
+  return NextResponse.json({
+    users: users.map((u) => ({
+      id: u.id,
+      username: u.username,
+      display_name: u.display_name,
+      role: u.role,
+      provider: u.provider || 'local',
+      email: u.email || null,
+      avatar_url: u.avatar_url || null,
+      is_approved: u.is_approved ?? 1,
+      workspace_id: u.workspace_id ?? 1,
+      tenant_id: u.tenant_id ?? tenantId,
+      memberships: (u.memberships || []).map((membership) => ({
+        workspace_id: membership.workspace_id,
+        workspace_name: membership.workspace_name,
+        workspace_slug: membership.workspace_slug,
+        tenant_id: membership.tenant_id,
+        role: membership.role,
+        is_default: membership.is_default,
+      })),
+      created_at: u.created_at,
+      last_login_at: u.last_login_at,
+    })),
+  })
 }
 
 /**
@@ -40,10 +63,12 @@ export async function POST(request: NextRequest) {
     const { username, password, display_name, role, provider, email } = result.data
 
     const workspaceId = currentUser.workspace_id ?? 1
+    const tenantId = currentUser.tenant_id ?? 1
     const newUser = createUser(username, password, display_name || username, role, {
       provider,
       email: email || null,
       workspace_id: workspaceId,
+      tenant_id: tenantId,
     })
 
     const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown'
@@ -103,12 +128,13 @@ export async function PUT(request: NextRequest) {
     }
 
     const workspaceId = currentUser.workspace_id ?? 1
+    const tenantId = currentUser.tenant_id ?? 1
     const existing = getUserById(userId)
-    if (!existing || (existing.workspace_id ?? 1) !== workspaceId) {
+    if (!existing || (existing.tenant_id ?? 1) !== tenantId) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    const updated = updateUser(userId, { display_name, role, password: password || undefined, is_approved, email, avatar_url })
+    const updated = updateUser(userId, { display_name, role, password: password || undefined, is_approved, email, avatar_url, tenant_id: tenantId })
     if (!updated) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
@@ -164,9 +190,9 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: 'Cannot delete your own account' }, { status: 400 })
   }
 
-  const workspaceId = currentUser.workspace_id ?? 1
+  const tenantId = currentUser.tenant_id ?? 1
   const existing = getUserById(userId)
-  if (!existing || (existing.workspace_id ?? 1) !== workspaceId) {
+  if (!existing || (existing.tenant_id ?? 1) !== tenantId) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }
 

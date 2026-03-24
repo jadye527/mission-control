@@ -313,6 +313,13 @@ export interface Tenant {
   owner_gateway?: string
 }
 
+export interface Workspace {
+  id: number
+  slug: string
+  name: string
+  tenant_id: number
+}
+
 export interface OsUser {
   username: string
   uid: number
@@ -528,6 +535,11 @@ interface MissionControlStore {
   // Auth
   currentUser: CurrentUser | null
   setCurrentUser: (user: CurrentUser | null) => void
+  activeWorkspace: Workspace | null
+  workspaces: Workspace[]
+  setActiveWorkspace: (workspace: Workspace | null) => void
+  setWorkspaces: (workspaces: Workspace[]) => void
+  fetchWorkspaces: () => Promise<void>
 
   // Tenant / Organization context
   activeTenant: Tenant | null
@@ -804,6 +816,23 @@ export const useMissionControl = create<MissionControlStore>()(
     // Auth
     currentUser: null,
     setCurrentUser: (user) => set({ currentUser: user }),
+    activeWorkspace: null,
+    workspaces: [],
+    setActiveWorkspace: (workspace) => set({ activeWorkspace: workspace }),
+    setWorkspaces: (workspaces) => set({ workspaces }),
+    fetchWorkspaces: async () => {
+      try {
+        const res = await fetch('/api/workspaces', { cache: 'no-store' })
+        if (!res.ok) return
+        const data = await res.json()
+        const workspaceList = Array.isArray(data?.workspaces) ? data.workspaces : []
+        const activeWorkspace = workspaceList.find((workspace: Workspace) => workspace.id === data?.active_workspace_id) || null
+        set({
+          workspaces: workspaceList,
+          activeWorkspace,
+        })
+      } catch {}
+    },
 
     // Tenant / Organization context
     activeTenant: (() => {

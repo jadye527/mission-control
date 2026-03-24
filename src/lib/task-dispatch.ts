@@ -4,6 +4,7 @@ import { callOpenClawGateway } from './openclaw-gateway'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { canDispatch, recordSuccess, recordFailure } from './circuit-breaker'
+import { handleDispatchQuotaError, handleCliWatchdogTimeout } from './provider-cooldown'
 
 interface DispatchableTask {
   id: number
@@ -603,6 +604,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       const errorMsg = err.message || 'Unknown error'
       logger.error({ taskId: task.id, agent: task.agent_name, err }, 'Task dispatch failed')
       recordFailure(task.id, errorMsg.substring(0, 200))
+      handleDispatchQuotaError(errorMsg)
+      handleCliWatchdogTimeout(errorMsg)
 
       // Revert to assigned so it can be retried on the next tick
       db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')

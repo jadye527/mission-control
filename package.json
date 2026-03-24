@@ -4,7 +4,7 @@
   "description": "OpenClaw Mission Control — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
-    "dev": "pnpm run verify:node && next dev --hostname 127.0.0.1 --port ${PORT:-3000}",
+    "dev": "pnpm run verify:node && next dev --hostname ${MC_DEV_HOST:-127.0.0.1} --port ${PORT:-3000}",
     "build": "pnpm run verify:node && next build",
     "start": "pnpm run verify:node && next start --hostname 0.0.0.0 --port ${PORT:-3000}",
     "start:standalone": "pnpm run verify:node && bash scripts/start-standalone.sh",
@@ -43,6 +43,7 @@
     "reagraph": "^4.30.8",
     "recharts": "^3.7.0",
     "remark-gfm": "^4.0.1",
+    "resend": "^6.9.4",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",

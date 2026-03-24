@@ -117,10 +117,10 @@ export async function POST(request: NextRequest) {
     } else if (status === 'rejected') {
       // Rejected: push back to in_progress with the rejection notes as error_message
       db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = unixepoch() WHERE id = ? AND workspace_id = ?')
-        .run('in_progress', `Quality review rejected by ${reviewer}: ${notes}`, taskId, workspaceId)
+        .run('assigned', `Quality review rejected by ${reviewer}: ${notes}`, taskId, workspaceId)
       eventBus.broadcast('task.status_changed', {
         id: taskId,
-        status: 'in_progress',
+        status: 'assigned',
         previous_status: 'review',
         updated_at: Math.floor(Date.now() / 1000),
       })

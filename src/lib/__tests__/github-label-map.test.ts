@@ -88,7 +88,7 @@ describe('labelToPriority', () => {
 
 describe('ALL_MC_LABELS', () => {
   it('contains all status and priority labels', () => {
-    expect(ALL_MC_LABELS.length).toBe(10) // 6 statuses + 4 priorities
+    expect(ALL_MC_LABELS.length).toBe(11) // 7 statuses + 4 priorities
     const names = ALL_MC_LABELS.map(l => l.name)
     expect(names).toContain('mc:inbox')
     expect(names).toContain('priority:critical')
@@ -104,7 +104,7 @@ describe('ALL_MC_LABELS', () => {
 
 describe('ALL_STATUS_LABEL_NAMES', () => {
   it('contains all 6 status label names', () => {
-    expect(ALL_STATUS_LABEL_NAMES).toHaveLength(6)
+    expect(ALL_STATUS_LABEL_NAMES).toHaveLength(7)
     expect(ALL_STATUS_LABEL_NAMES).toContain('mc:inbox')
     expect(ALL_STATUS_LABEL_NAMES).toContain('mc:done')
   })

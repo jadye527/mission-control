@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import type { DashboardData } from './widget-primitives'
 
 import { MetricCardsWidget } from './widgets/metric-cards-widget'
+import { OwnerCockpitWidget } from './widgets/owner-cockpit-widget'
 import { RuntimeHealthWidget } from './widgets/runtime-health-widget'
 import { GatewayHealthWidget } from './widgets/gateway-health-widget'
 import { SessionWorkbenchWidget } from './widgets/session-workbench-widget'
@@ -19,6 +20,7 @@ import { QuickActionsWidget } from './widgets/quick-actions-widget'
 
 const WIDGET_COMPONENTS: Record<string, React.ComponentType<{ data: DashboardData }>> = {
   'metric-cards': MetricCardsWidget,
+  'owner-cockpit': OwnerCockpitWidget,
   'runtime-health': RuntimeHealthWidget,
   'gateway-health': GatewayHealthWidget,
   'session-workbench': SessionWorkbenchWidget,

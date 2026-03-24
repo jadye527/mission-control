@@ -224,7 +224,7 @@ export function useWebSocket() {
     const cachedToken = getCachedDeviceToken()
 
     const clientId = DEFAULT_GATEWAY_CLIENT_ID
-    const clientMode = 'ui'
+    const clientMode = 'webchat'
     const role = 'operator'
     const scopes = ['operator.admin']
     const authToken = authTokenRef.current || undefined

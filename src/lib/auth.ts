@@ -34,6 +34,10 @@ export interface User {
   role: 'admin' | 'operator' | 'viewer'
   workspace_id: number
   tenant_id: number
+  workspace_slug?: string
+  workspace_name?: string
+  tenant_slug?: string
+  tenant_display_name?: string
   provider?: 'local' | 'google' | 'proxy'
   email?: string | null
   avatar_url?: string | null
@@ -43,6 +47,22 @@ export interface User {
   last_login_at: number | null
   /** Agent name when request is made on behalf of a specific agent (via X-Agent-Name header) */
   agent_name?: string | null
+  memberships?: WorkspaceMembership[]
+}
+
+export interface WorkspaceMembership {
+  id: number
+  user_id: number
+  tenant_id: number
+  workspace_id: number
+  role: 'admin' | 'operator' | 'viewer'
+  is_default: number
+  created_at: number
+  updated_at: number
+  tenant_slug: string
+  tenant_display_name: string
+  workspace_slug: string
+  workspace_name: string
 }
 
 export interface UserSession {
@@ -91,6 +111,21 @@ interface UserQueryRow {
   password_hash: string
 }
 
+interface MembershipQueryRow {
+  id: number
+  user_id: number
+  tenant_id: number
+  workspace_id: number
+  role: 'admin' | 'operator' | 'viewer'
+  is_default: number
+  created_at: number
+  updated_at: number
+  tenant_slug: string
+  tenant_display_name: string
+  workspace_slug: string
+  workspace_name: string
+}
+
 // Session management
 const SESSION_DURATION = 7 * 24 * 60 * 60 // 7 days in seconds
 
@@ -128,6 +163,96 @@ function resolveTenantForWorkspace(workspaceId: number): number {
   return row?.tenant_id || getDefaultWorkspaceContext().tenantId
 }
 
+function listMembershipsForUser(userId: number): WorkspaceMembership[] {
+  const db = getDatabase()
+  try {
+    return db.prepare(`
+      SELECT
+        tm.id,
+        tm.user_id,
+        tm.tenant_id,
+        tm.workspace_id,
+        tm.role,
+        tm.is_default,
+        tm.created_at,
+        tm.updated_at,
+        t.slug AS tenant_slug,
+        t.display_name AS tenant_display_name,
+        w.slug AS workspace_slug,
+        w.name AS workspace_name
+      FROM tenant_memberships tm
+      JOIN tenants t ON t.id = tm.tenant_id
+      JOIN workspaces w ON w.id = tm.workspace_id AND w.tenant_id = tm.tenant_id
+      WHERE tm.user_id = ? AND tm.status = 'active'
+      ORDER BY tm.is_default DESC, t.display_name COLLATE NOCASE ASC, w.name COLLATE NOCASE ASC, tm.id ASC
+    `).all(userId) as WorkspaceMembership[]
+  } catch {
+    return []
+  }
+}
+
+function getMembershipForWorkspace(userId: number, workspaceId: number): WorkspaceMembership | null {
+  return listMembershipsForUser(userId).find((membership) => membership.workspace_id === workspaceId) || null
+}
+
+function resolvePreferredMembership(
+  userId: number,
+  preferredWorkspaceId?: number | null,
+): WorkspaceMembership | null {
+  const memberships = listMembershipsForUser(userId)
+  if (memberships.length === 0) return null
+  if (preferredWorkspaceId) {
+    const explicit = memberships.find((membership) => membership.workspace_id === preferredWorkspaceId)
+    if (explicit) return explicit
+  }
+  return memberships.find((membership) => membership.is_default === 1) || memberships[0]
+}
+
+function hydrateUserFromRow(row: UserQueryRow, preferredWorkspaceId?: number | null): User | null {
+  const fallbackContext = getDefaultWorkspaceContext()
+  const membership = resolvePreferredMembership(row.id, preferredWorkspaceId ?? row.workspace_id ?? fallbackContext.workspaceId)
+
+  if (membership) {
+    return {
+      id: row.id,
+      username: row.username,
+      display_name: row.display_name,
+      role: membership.role,
+      workspace_id: membership.workspace_id,
+      tenant_id: membership.tenant_id,
+      workspace_slug: membership.workspace_slug,
+      workspace_name: membership.workspace_name,
+      tenant_slug: membership.tenant_slug,
+      tenant_display_name: membership.tenant_display_name,
+      provider: row.provider || 'local',
+      email: row.email ?? null,
+      avatar_url: row.avatar_url ?? null,
+      is_approved: row.is_approved ?? 1,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      last_login_at: row.last_login_at,
+      memberships: listMembershipsForUser(row.id),
+    }
+  }
+
+  return {
+    id: row.id,
+    username: row.username,
+    display_name: row.display_name,
+    role: row.role,
+    workspace_id: row.workspace_id || fallbackContext.workspaceId,
+    tenant_id: resolveTenantForWorkspace(row.workspace_id || fallbackContext.workspaceId),
+    provider: row.provider || 'local',
+    email: row.email ?? null,
+    avatar_url: row.avatar_url ?? null,
+    is_approved: row.is_approved ?? 1,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    last_login_at: row.last_login_at,
+    memberships: [],
+  }
+}
+
 export function createSession(
   userId: number,
   ipAddress?: string,
@@ -138,8 +263,9 @@ export function createSession(
   const token = randomBytes(32).toString('hex')
   const now = Math.floor(Date.now() / 1000)
   const expiresAt = now + SESSION_DURATION
-  const resolvedWorkspaceId = workspaceId ?? ((db.prepare('SELECT workspace_id FROM users WHERE id = ?').get(userId) as { workspace_id?: number } | undefined)?.workspace_id || getDefaultWorkspaceContext().workspaceId)
-  const resolvedTenantId = resolveTenantForWorkspace(resolvedWorkspaceId)
+  const membership = resolvePreferredMembership(userId, workspaceId)
+  const resolvedWorkspaceId = membership?.workspace_id || workspaceId || ((db.prepare('SELECT workspace_id FROM users WHERE id = ?').get(userId) as { workspace_id?: number } | undefined)?.workspace_id || getDefaultWorkspaceContext().workspaceId)
+  const resolvedTenantId = membership?.tenant_id || resolveTenantForWorkspace(resolvedWorkspaceId)
 
   db.prepare(`
     INSERT INTO user_sessions (token, user_id, expires_at, ip_address, user_agent, workspace_id, tenant_id)
@@ -147,7 +273,7 @@ export function createSession(
   `).run(token, userId, expiresAt, ipAddress || null, userAgent || null, resolvedWorkspaceId, resolvedTenantId)
 
   // Update user's last login
-  db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').run(now, now, userId)
+  db.prepare('UPDATE users SET last_login_at = ?, updated_at = ?, workspace_id = ? WHERE id = ?').run(now, now, resolvedWorkspaceId, userId)
 
   // Clean up expired sessions
   db.prepare('DELETE FROM user_sessions WHERE expires_at < ?').run(now)
@@ -173,23 +299,25 @@ export function validateSession(token: string): (User & { sessionId: number }) |
   `).get(token, now) as SessionQueryRow | undefined
 
   if (!row) return null
-
-  return {
+  const hydrated = hydrateUserFromRow({
     id: row.id,
     username: row.username,
     display_name: row.display_name,
     role: row.role,
-    workspace_id: row.workspace_id || getDefaultWorkspaceContext().workspaceId,
-    tenant_id: row.tenant_id || getDefaultWorkspaceContext().tenantId,
-    provider: row.provider || 'local',
-    email: row.email ?? null,
-    avatar_url: row.avatar_url ?? null,
-    is_approved: typeof row.is_approved === 'number' ? row.is_approved : 1,
+    provider: row.provider,
+    email: row.email,
+    avatar_url: row.avatar_url,
+    is_approved: row.is_approved,
+    workspace_id: row.workspace_id,
+    tenant_id: row.tenant_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_login_at: row.last_login_at,
-    sessionId: row.session_id,
-  }
+    password_hash: '',
+  }, row.workspace_id)
+  if (!hydrated) return null
+
+  return { ...hydrated, sessionId: row.session_id }
 }
 
 export function destroySession(token: string): void {
@@ -210,7 +338,14 @@ const DUMMY_HASH = '000000000000000000000000000000000000000000000000000000000000
 // User management
 export function authenticateUser(username: string, password: string): User | null {
   const db = getDatabase()
-  const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as UserQueryRow | undefined
+  const identifier = username.trim()
+  const row = db.prepare(`
+    SELECT *
+    FROM users
+    WHERE username = ? OR (email IS NOT NULL AND lower(email) = lower(?))
+    ORDER BY CASE WHEN username = ? THEN 0 ELSE 1 END, id ASC
+    LIMIT 1
+  `).get(identifier, identifier, identifier) as UserQueryRow | undefined
   if (!row) {
     // Always run verifyPassword to prevent timing-based username enumeration
     verifyPassword(password, DUMMY_HASH)
@@ -231,21 +366,7 @@ export function authenticateUser(username: string, password: string): User | nul
     try { logSecurityEvent({ event_type: 'auth_failure', severity: 'warning', source: 'auth', detail: JSON.stringify({ username, reason: 'invalid_password' }), workspace_id: 1, tenant_id: 1 }) } catch {}
     return null
   }
-  return {
-    id: row.id,
-    username: row.username,
-    display_name: row.display_name,
-    role: row.role,
-    workspace_id: row.workspace_id || getDefaultWorkspaceContext().workspaceId,
-    tenant_id: resolveTenantForWorkspace(row.workspace_id || getDefaultWorkspaceContext().workspaceId),
-    provider: row.provider || 'local',
-    email: row.email ?? null,
-    avatar_url: row.avatar_url ?? null,
-    is_approved: row.is_approved ?? 1,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    last_login_at: row.last_login_at,
-  }
+  return hydrateUserFromRow(row, row.workspace_id || getDefaultWorkspaceContext().workspaceId)
 }
 
 export function getUserById(id: number): User | null {
@@ -256,19 +377,20 @@ export function getUserById(id: number): User | null {
     FROM users u
     LEFT JOIN workspaces w ON w.id = u.workspace_id
     WHERE u.id = ?
-  `).get(id) as User | undefined
-  return row ? { ...row, tenant_id: row.tenant_id || getDefaultWorkspaceContext().tenantId } : null
+  `).get(id) as UserQueryRow | undefined
+  return row ? hydrateUserFromRow(row, row.workspace_id) : null
 }
 
 export function getAllUsers(): User[] {
   const db = getDatabase()
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT u.id, u.username, u.display_name, u.role, u.workspace_id, COALESCE(w.tenant_id, 1) as tenant_id,
            u.provider, u.email, u.avatar_url, u.is_approved, u.created_at, u.updated_at, u.last_login_at
     FROM users u
     LEFT JOIN workspaces w ON w.id = u.workspace_id
     ORDER BY u.created_at
-  `).all() as User[]
+  `).all() as UserQueryRow[]
+  return rows.map((row) => hydrateUserFromRow(row, row.workspace_id)).filter((row): row is User => Boolean(row))
 }
 
 export function createUser(
@@ -276,35 +398,61 @@ export function createUser(
   password: string,
   displayName: string,
   role: User['role'] = 'operator',
-  options?: { provider?: 'local' | 'google'; provider_user_id?: string | null; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; approved_by?: string | null; approved_at?: number | null; workspace_id?: number }
+  options?: { provider?: 'local' | 'google'; provider_user_id?: string | null; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; approved_by?: string | null; approved_at?: number | null; workspace_id?: number; tenant_id?: number; is_default_membership?: boolean }
 ): User {
   const db = getDatabase()
   if (password.length < 12) throw new Error('Password must be at least 12 characters')
   const passwordHash = hashPassword(password)
   const provider = options?.provider || 'local'
   const workspaceId = options?.workspace_id || getDefaultWorkspaceContext().workspaceId
-  const result = db.prepare(`
-    INSERT INTO users (username, display_name, password_hash, role, provider, provider_user_id, email, avatar_url, is_approved, approved_by, approved_at, workspace_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    username,
-    displayName,
-    passwordHash,
-    role,
-    provider,
-    options?.provider_user_id || null,
-    options?.email || null,
-    options?.avatar_url || null,
-    typeof options?.is_approved === 'number' ? options.is_approved : 1,
-    options?.approved_by || null,
-    options?.approved_at || null,
-    workspaceId,
-  )
+  const tenantId = options?.tenant_id || resolveTenantForWorkspace(workspaceId)
+  const now = Math.floor(Date.now() / 1000)
+  const result = db.transaction(() => {
+    const inserted = db.prepare(`
+      INSERT INTO users (username, display_name, password_hash, role, provider, provider_user_id, email, avatar_url, is_approved, approved_by, approved_at, workspace_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      username,
+      displayName,
+      passwordHash,
+      role,
+      provider,
+      options?.provider_user_id || null,
+      options?.email || null,
+      options?.avatar_url || null,
+      typeof options?.is_approved === 'number' ? options.is_approved : 1,
+      options?.approved_by || null,
+      options?.approved_at || null,
+      workspaceId,
+      now,
+      now,
+    )
+
+    try {
+      db.prepare(`
+        INSERT INTO tenant_memberships (
+          user_id, tenant_id, workspace_id, role, status, is_default, invited_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'active', ?, NULL, ?, ?)
+      `).run(
+        Number(inserted.lastInsertRowid),
+        tenantId,
+        workspaceId,
+        role,
+        options?.is_default_membership === false ? 0 : 1,
+        now,
+        now,
+      )
+    } catch {
+      // Membership table is migration-backed; if unavailable, continue with legacy behavior.
+    }
+
+    return inserted
+  })()
 
   return getUserById(Number(result.lastInsertRowid))!
 }
 
-export function updateUser(id: number, updates: { display_name?: string; role?: User['role']; password?: string; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1 }): User | null {
+export function updateUser(id: number, updates: { display_name?: string; role?: User['role']; password?: string; email?: string | null; avatar_url?: string | null; is_approved?: 0 | 1; tenant_id?: number | null }): User | null {
   const db = getDatabase()
   const fields: string[] = []
   const params: any[] = []
@@ -323,6 +471,25 @@ export function updateUser(id: number, updates: { display_name?: string; role?: 
   params.push(id)
 
   db.prepare(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`).run(...params)
+  if (updates.role !== undefined) {
+    try {
+      if (updates.tenant_id) {
+        db.prepare(`
+          UPDATE tenant_memberships
+          SET role = ?, updated_at = ?
+          WHERE user_id = ? AND tenant_id = ?
+        `).run(updates.role, Math.floor(Date.now() / 1000), id, updates.tenant_id)
+      } else {
+        db.prepare(`
+          UPDATE tenant_memberships
+          SET role = ?, updated_at = ?
+          WHERE user_id = ?
+        `).run(updates.role, Math.floor(Date.now() / 1000), id)
+      }
+    } catch {
+      // Membership sync is best-effort for backward compatibility.
+    }
+  }
   return getUserById(id)
 }
 
@@ -331,6 +498,97 @@ export function deleteUser(id: number): boolean {
   destroyAllUserSessions(id)
   const result = db.prepare('DELETE FROM users WHERE id = ?').run(id)
   return result.changes > 0
+}
+
+export function listUsersForTenant(tenantId: number): User[] {
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT DISTINCT
+      u.id,
+      u.username,
+      u.display_name,
+      u.role,
+      COALESCE(u.workspace_id, tm.workspace_id, 1) AS workspace_id,
+      ? AS tenant_id,
+      u.provider,
+      u.email,
+      u.avatar_url,
+      u.is_approved,
+      u.created_at,
+      u.updated_at,
+      u.last_login_at,
+      u.password_hash
+    FROM users u
+    JOIN tenant_memberships tm
+      ON tm.user_id = u.id
+     AND tm.tenant_id = ?
+     AND tm.status = 'active'
+    ORDER BY u.display_name COLLATE NOCASE ASC, u.username COLLATE NOCASE ASC
+  `).all(tenantId, tenantId) as UserQueryRow[]
+
+  return rows.map((row) => hydrateUserFromRow(row, row.workspace_id)).filter((row): row is User => Boolean(row))
+}
+
+export function setUserDefaultWorkspace(userId: number, workspaceId: number): User | null {
+  const db = getDatabase()
+  const membership = getMembershipForWorkspace(userId, workspaceId)
+  if (!membership) return null
+  const now = Math.floor(Date.now() / 1000)
+
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE tenant_memberships
+      SET is_default = CASE WHEN workspace_id = ? THEN 1 ELSE 0 END,
+          updated_at = ?
+      WHERE user_id = ? AND tenant_id = ?
+    `).run(workspaceId, now, userId, membership.tenant_id)
+
+    db.prepare(`
+      UPDATE users
+      SET workspace_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(workspaceId, now, userId)
+  })()
+
+  return getUserById(userId)
+}
+
+export function setSessionWorkspace(token: string, workspaceId: number): User | null {
+  const db = getDatabase()
+  const session = db.prepare(`
+    SELECT user_id
+    FROM user_sessions
+    WHERE token = ?
+    LIMIT 1
+  `).get(token) as { user_id: number } | undefined
+  if (!session) return null
+
+  const membership = getMembershipForWorkspace(session.user_id, workspaceId)
+  if (!membership) return null
+  const now = Math.floor(Date.now() / 1000)
+
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE user_sessions
+      SET workspace_id = ?, tenant_id = ?
+      WHERE token = ?
+    `).run(workspaceId, membership.tenant_id, token)
+
+    db.prepare(`
+      UPDATE tenant_memberships
+      SET is_default = CASE WHEN workspace_id = ? THEN 1 ELSE 0 END,
+          updated_at = ?
+      WHERE user_id = ? AND tenant_id = ?
+    `).run(workspaceId, now, session.user_id, membership.tenant_id)
+
+    db.prepare(`
+      UPDATE users
+      SET workspace_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(workspaceId, now, session.user_id)
+  })()
+
+  return getUserById(session.user_id)
 }
 
 /**
@@ -346,6 +604,258 @@ export function deleteUser(id: number): boolean {
  * If the user does not exist and MC_PROXY_AUTH_DEFAULT_ROLE is set, auto-provisions them.
  * Auto-provisioned users receive a random unusable password — they cannot log in locally.
  */
+export interface UserApiKeyRecord {
+  id: number
+  label: string
+  key_prefix: string
+  role: User['role']
+  scopes: string[]
+  expires_at: number | null
+  last_used_at: number | null
+  last_used_ip: string | null
+  is_revoked: number
+  workspace_id: number
+  tenant_id: number
+  created_at: number
+  updated_at: number
+}
+
+export interface InviteRecord {
+  id: number
+  email: string
+  role: User['role']
+  tenant_id: number
+  workspace_id: number
+  invited_by_user_id: number | null
+  invited_by_username: string | null
+  token_hint: string
+  expires_at: number
+  accepted_at: number | null
+  revoked_at: number | null
+  created_at: number
+  updated_at: number
+  workspace_name: string
+  workspace_slug: string
+}
+
+export function listUserApiKeys(userId: number, tenantId?: number): UserApiKeyRecord[] {
+  const db = getDatabase()
+  const rows = db.prepare(`
+    SELECT id, label, key_prefix, role, scopes, expires_at, last_used_at, last_used_ip, is_revoked, workspace_id, tenant_id, created_at, updated_at
+    FROM api_keys
+    WHERE user_id = ?
+      ${tenantId ? 'AND tenant_id = ?' : ''}
+    ORDER BY created_at DESC, id DESC
+  `).all(...(tenantId ? [userId, tenantId] : [userId])) as Array<Omit<UserApiKeyRecord, 'scopes'> & { scopes: string | null }>
+
+  return rows.map((row) => ({
+    ...row,
+    scopes: (() => {
+      try {
+        const parsed = JSON.parse(row.scopes || '[]')
+        return Array.isArray(parsed) ? parsed.map((value) => String(value)) : []
+      } catch {
+        return []
+      }
+    })(),
+  }))
+}
+
+export function createUserApiKey(
+  user: User,
+  input: { label: string; role?: User['role']; scopes?: string[]; expiresAt?: number | null },
+): { record: UserApiKeyRecord; rawKey: string } {
+  const db = getDatabase()
+  const now = Math.floor(Date.now() / 1000)
+  const rawKey = `mcu_${randomBytes(24).toString('hex')}`
+  const keyHash = hashApiKey(rawKey)
+  const keyPrefix = rawKey.slice(0, 12)
+  const result = db.prepare(`
+    INSERT INTO api_keys (
+      user_id, label, key_prefix, key_hash, role, scopes, expires_at, workspace_id, tenant_id, is_revoked, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).run(
+    user.id,
+    input.label.trim(),
+    keyPrefix,
+    keyHash,
+    input.role || user.role,
+    JSON.stringify(Array.isArray(input.scopes) ? input.scopes : []),
+    input.expiresAt || null,
+    user.workspace_id,
+    user.tenant_id,
+    now,
+    now,
+  )
+
+  const record = listUserApiKeys(user.id, user.tenant_id).find((row) => row.id === Number(result.lastInsertRowid))
+  if (!record) throw new Error('Failed to create API key')
+  return { record, rawKey }
+}
+
+export function revokeUserApiKey(userId: number, keyId: number, tenantId?: number): boolean {
+  const db = getDatabase()
+  const result = db.prepare(`
+    UPDATE api_keys
+    SET is_revoked = 1, updated_at = unixepoch()
+    WHERE id = ? AND user_id = ?
+      ${tenantId ? 'AND tenant_id = ?' : ''}
+      AND is_revoked = 0
+  `).run(...(tenantId ? [keyId, userId, tenantId] : [keyId, userId]))
+  return result.changes > 0
+}
+
+export function listTenantInvites(tenantId: number): InviteRecord[] {
+  const db = getDatabase()
+  try {
+    return db.prepare(`
+      SELECT
+        i.id,
+        i.email,
+        i.role,
+        i.tenant_id,
+        i.workspace_id,
+        i.invited_by_user_id,
+        u.username AS invited_by_username,
+        i.token_hint,
+        i.expires_at,
+        i.accepted_at,
+        i.revoked_at,
+        i.created_at,
+        i.updated_at,
+        w.name AS workspace_name,
+        w.slug AS workspace_slug
+      FROM auth_invites i
+      LEFT JOIN users u ON u.id = i.invited_by_user_id
+      JOIN workspaces w ON w.id = i.workspace_id
+      WHERE i.tenant_id = ?
+      ORDER BY i.created_at DESC, i.id DESC
+    `).all(tenantId) as InviteRecord[]
+  } catch {
+    return []
+  }
+}
+
+export function createTenantInvite(
+  user: User,
+  input: { email: string; role: User['role']; workspaceId?: number; expiresInDays?: number },
+): { invite: InviteRecord; token: string } {
+  const db = getDatabase()
+  const workspaceId = input.workspaceId || user.workspace_id
+  const membership = getMembershipForWorkspace(user.id, workspaceId)
+  if (!membership || membership.tenant_id !== user.tenant_id) {
+    throw new Error('Workspace is not accessible for this tenant')
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const expiresAt = now + Math.max(1, Math.min(30, input.expiresInDays || 7)) * 24 * 60 * 60
+  const token = `mci_${randomBytes(24).toString('hex')}`
+  const tokenHash = hashApiKey(token)
+  const tokenHint = token.slice(0, 10)
+  const result = db.prepare(`
+    INSERT INTO auth_invites (
+      email, tenant_id, workspace_id, role, token_hash, token_hint, invited_by_user_id, expires_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    input.email.trim().toLowerCase(),
+    user.tenant_id,
+    workspaceId,
+    input.role,
+    tokenHash,
+    tokenHint,
+    user.id,
+    expiresAt,
+    now,
+    now,
+  )
+
+  const invite = listTenantInvites(user.tenant_id).find((row) => row.id === Number(result.lastInsertRowid))
+  if (!invite) throw new Error('Failed to create invite')
+  return { invite, token }
+}
+
+export function revokeTenantInvite(tenantId: number, inviteId: number): boolean {
+  const db = getDatabase()
+  const result = db.prepare(`
+    UPDATE auth_invites
+    SET revoked_at = unixepoch(), updated_at = unixepoch()
+    WHERE id = ? AND tenant_id = ? AND revoked_at IS NULL AND accepted_at IS NULL
+  `).run(inviteId, tenantId)
+  return result.changes > 0
+}
+
+export function getInviteByToken(token: string): InviteRecord | null {
+  const db = getDatabase()
+  const tokenHash = hashApiKey(token)
+  const now = Math.floor(Date.now() / 1000)
+  try {
+    const row = db.prepare(`
+      SELECT
+        i.id,
+        i.email,
+        i.role,
+        i.tenant_id,
+        i.workspace_id,
+        i.invited_by_user_id,
+        u.username AS invited_by_username,
+        i.token_hint,
+        i.expires_at,
+        i.accepted_at,
+        i.revoked_at,
+        i.created_at,
+        i.updated_at,
+        w.name AS workspace_name,
+        w.slug AS workspace_slug
+      FROM auth_invites i
+      LEFT JOIN users u ON u.id = i.invited_by_user_id
+      JOIN workspaces w ON w.id = i.workspace_id
+      WHERE i.token_hash = ?
+        AND i.revoked_at IS NULL
+        AND i.accepted_at IS NULL
+        AND i.expires_at > ?
+      LIMIT 1
+    `).get(tokenHash, now) as InviteRecord | undefined
+    return row || null
+  } catch {
+    return null
+  }
+}
+
+export function acceptInviteForUser(inviteId: number, userId: number): User | null {
+  const db = getDatabase()
+  const invite = db.prepare(`
+    SELECT id, tenant_id, workspace_id, role
+    FROM auth_invites
+    WHERE id = ? AND revoked_at IS NULL AND accepted_at IS NULL
+    LIMIT 1
+  `).get(inviteId) as { id: number; tenant_id: number; workspace_id: number; role: User['role'] } | undefined
+  if (!invite) return null
+
+  const now = Math.floor(Date.now() / 1000)
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO tenant_memberships (
+        user_id, tenant_id, workspace_id, role, status, is_default, invited_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'active', 0, NULL, ?, ?)
+      ON CONFLICT(user_id, workspace_id) DO UPDATE SET
+        role = excluded.role,
+        status = 'active',
+        updated_at = excluded.updated_at
+    `).run(userId, invite.tenant_id, invite.workspace_id, invite.role, now, now)
+
+    db.prepare(`
+      UPDATE auth_invites
+      SET accepted_at = ?, accepted_by_user_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(now, userId, now, inviteId)
+  })()
+
+  const membership = getMembershipForWorkspace(userId, invite.workspace_id)
+  if (membership?.is_default !== 1) {
+    setUserDefaultWorkspace(userId, invite.workspace_id)
+  }
+  return getUserById(userId)
+}
+
 function resolveOrProvisionProxyUser(username: string): User | null {
   try {
     const db = getDatabase()
@@ -443,8 +953,57 @@ export function getUserFromRequest(request: Request): User | null {
       const db = getDatabase()
       const keyHash = hashApiKey(apiKey)
       const now = Math.floor(Date.now() / 1000)
+      const userKey = db.prepare(`
+        SELECT user_id, role, workspace_id, tenant_id, expires_at, is_revoked
+        FROM api_keys
+        WHERE key_hash = ?
+        LIMIT 1
+      `).get(keyHash) as {
+        user_id: number
+        role: User['role']
+        workspace_id: number
+        tenant_id: number
+        expires_at: number | null
+        is_revoked: number
+      } | undefined
+
+      if (userKey && !userKey.is_revoked && (!userKey.expires_at || userKey.expires_at > now)) {
+        db.prepare(`
+          UPDATE api_keys
+          SET last_used_at = ?, last_used_ip = ?, updated_at = ?
+          WHERE key_hash = ?
+        `).run(now, request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || null, now, keyHash)
+
+        const resolved = getUserById(userKey.user_id)
+        if (resolved) {
+          const scoped = userKey.workspace_id ? hydrateUserFromRow({
+            id: resolved.id,
+            username: resolved.username,
+            display_name: resolved.display_name,
+            role: resolved.role,
+            workspace_id: resolved.workspace_id,
+            tenant_id: resolved.tenant_id,
+            provider: resolved.provider === 'proxy' ? 'local' : (resolved.provider || 'local'),
+            email: resolved.email ?? null,
+            avatar_url: resolved.avatar_url ?? null,
+            is_approved: resolved.is_approved ?? 1,
+            created_at: resolved.created_at,
+            updated_at: resolved.updated_at,
+            last_login_at: resolved.last_login_at,
+            password_hash: '',
+          }, userKey.workspace_id) : resolved
+          if (scoped) {
+            return {
+              ...scoped,
+              role: userKey.role || scoped.role,
+              agent_name: agentName,
+            }
+          }
+        }
+      }
+
       const row = db.prepare(`
-        SELECT id, agent_id, workspace_id, scopes, expires_at, revoked_at
+        SELECT id, agent_id, workspace_id, tenant_id, scopes, expires_at, revoked_at
         FROM agent_api_keys
         WHERE key_hash = ?
         LIMIT 1
@@ -452,6 +1011,7 @@ export function getUserFromRequest(request: Request): User | null {
         id: number
         agent_id: number
         workspace_id: number
+        tenant_id?: number
         scopes: string
         expires_at: number | null
         revoked_at: number | null
@@ -476,7 +1036,7 @@ export function getUserFromRequest(request: Request): User | null {
             display_name: agent.name,
             role: deriveRoleFromScopes(scopes),
             workspace_id: row.workspace_id,
-            tenant_id: getDefaultWorkspaceContext().tenantId,
+            tenant_id: row.tenant_id || resolveTenantForWorkspace(row.workspace_id),
             created_at: 0,
             updated_at: now,
             last_login_at: now,
@@ -575,4 +1135,3 @@ export function requireRole(
   }
   return { user }
 }
-

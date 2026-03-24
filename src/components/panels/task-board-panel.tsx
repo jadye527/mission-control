@@ -447,7 +447,8 @@ export function TaskBoardPanel() {
       if (projectFilter !== 'all') {
         tasksQuery.set('project_id', projectFilter)
       }
-      const tasksUrl = tasksQuery.toString() ? `/api/tasks?${tasksQuery.toString()}` : '/api/tasks'
+      tasksQuery.set('limit', '200')
+      const tasksUrl = `/api/tasks?${tasksQuery.toString()}`
 
       const [tasksResponse, agentsResponse, projectsResponse] = await Promise.all([
         fetch(tasksUrl),

@@ -84,7 +84,7 @@ export async function PUT(
       detail: { old_name: existing.name, new_name: name.trim() },
     })
 
-    const updated = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(Number(id))
+    const updated = db.prepare('SELECT * FROM workspaces WHERE id = ? AND tenant_id = ?').get(Number(id), tenantId)
     return NextResponse.json({ workspace: updated })
   } catch (error) {
     logger.error({ err: error }, 'PUT /api/workspaces/[id] error')
@@ -127,24 +127,67 @@ export async function DELETE(
 
     const fallbackId = defaultWs?.id ?? 1
 
+    const now = Math.floor(Date.now() / 1000)
     db.transaction(() => {
       // Reassign agents to default workspace
       const moved = db.prepare(
         'UPDATE agents SET workspace_id = ?, updated_at = ? WHERE workspace_id = ?'
-      ).run(fallbackId, Math.floor(Date.now() / 1000), workspaceId)
+      ).run(fallbackId, now, workspaceId)
 
       // Reassign users to default workspace
       db.prepare(
         'UPDATE users SET workspace_id = ?, updated_at = ? WHERE workspace_id = ?'
-      ).run(fallbackId, Math.floor(Date.now() / 1000), workspaceId)
+      ).run(fallbackId, now, workspaceId)
 
       // Reassign projects to default workspace
       db.prepare(
         'UPDATE projects SET workspace_id = ?, updated_at = ? WHERE workspace_id = ?'
-      ).run(fallbackId, Math.floor(Date.now() / 1000), workspaceId)
+      ).run(fallbackId, now, workspaceId)
+
+      // Preserve tenant access continuity for sessions, API keys, invites, and memberships.
+      db.prepare(
+        'UPDATE user_sessions SET workspace_id = ?, tenant_id = ? WHERE workspace_id = ?'
+      ).run(fallbackId, tenantId, workspaceId)
+      db.prepare(
+        'UPDATE api_keys SET workspace_id = ?, tenant_id = ?, updated_at = ? WHERE workspace_id = ?'
+      ).run(fallbackId, tenantId, now, workspaceId)
+      db.prepare(
+        'UPDATE auth_invites SET workspace_id = ?, updated_at = ? WHERE workspace_id = ? AND tenant_id = ? AND accepted_at IS NULL AND revoked_at IS NULL'
+      ).run(fallbackId, now, workspaceId, tenantId)
+
+      db.prepare(`
+        INSERT INTO tenant_memberships (
+          user_id, tenant_id, workspace_id, role, status, is_default, invited_by, created_at, updated_at
+        )
+        SELECT tm.user_id, tm.tenant_id, ?, tm.role, tm.status, 0, tm.invited_by, tm.created_at, ?
+        FROM tenant_memberships tm
+        WHERE tm.workspace_id = ? AND tm.tenant_id = ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM tenant_memberships existing
+            WHERE existing.user_id = tm.user_id
+              AND existing.workspace_id = ?
+          )
+      `).run(fallbackId, now, workspaceId, tenantId, fallbackId)
+
+      db.prepare(`
+        UPDATE tenant_memberships
+        SET is_default = CASE WHEN workspace_id = ? THEN 1 ELSE 0 END,
+            updated_at = ?
+        WHERE tenant_id = ?
+          AND user_id IN (
+            SELECT user_id
+            FROM tenant_memberships
+            WHERE workspace_id = ? AND tenant_id = ? AND is_default = 1
+          )
+      `).run(fallbackId, now, tenantId, workspaceId, tenantId)
+
+      db.prepare(
+        'DELETE FROM tenant_memberships WHERE workspace_id = ? AND tenant_id = ?'
+      ).run(workspaceId, tenantId)
 
       // Delete workspace
-      db.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId)
+      db.prepare('DELETE FROM workspaces WHERE id = ? AND tenant_id = ?').run(workspaceId, tenantId)
 
       logAuditEvent({
         action: 'workspace_deleted',

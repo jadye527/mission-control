@@ -1,0 +1,7 @@
+tunnel: 494f373d-7b98-471e-817f-fdb1c4a95457
+credentials-file: /home/jasondye/.cloudflared/494f373d-7b98-471e-817f-fdb1c4a95457.json
+
+ingress:
+  - hostname: missioncontrol.jasoncdye.com
+    service: http://localhost:3002
+  - service: http_status:404

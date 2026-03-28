@@ -188,7 +188,7 @@ function resolutionRequiresOwnerAction(resolution: string | null | undefined): b
 function parseReviewVerdict(text: string): { status: 'approved' | 'rejected'; notes: string } {
   const upper = text.toUpperCase()
   const status = upper.includes('VERDICT: APPROVED') ? 'approved' as const : 'rejected' as const
-  const notesMatch = text.match(/NOTES:\s*(.+)/i)
+  const notesMatch = text.match(/NOTES:\s*([\s\S]+)/i)
   const notes = notesMatch?.[1]?.trim().substring(0, 2000) || (status === 'approved' ? 'Quality check passed' : 'Quality check failed')
   return { status, notes }
 }
@@ -483,9 +483,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         }
         // Model override intentionally disabled for gateway agent calls.
         // Current gateway validation rejects arbitrary top-level `model` params,
-        // which causes retry loops and stale in_progress tasks. Keep classification
-        // logic in place for future compatibility, but do not send it here.
-        void dispatchModel
+        // which causes retry loops and stale in_progress tasks.
         // Model overrides are not supported by the gateway for agent="main".
         // Let each agent use its own configured default model.
 

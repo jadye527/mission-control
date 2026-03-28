@@ -725,6 +725,9 @@
   },
   "taskBoard": {
     "title": "Task Board",
+    "searchPlaceholder": "Search tasks...",
+    "clearSearch": "Clear search",
+    "noTasksMatchSearch": "No tasks match \"{query}\"",
     "allProjects": "All Projects",
     "projects": "Projects",
     "close": "Close",

@@ -410,6 +410,7 @@ export function TaskBoardPanel() {
     timeoutSeconds: 300
   })
   const [isSpawning, setIsSpawning] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [gnapStatus, setGnapStatus] = useState<{ enabled: boolean; taskCount?: number; lastSync?: string } | null>(null)
   const [gnapSyncing, setGnapSyncing] = useState(false)
   const isLocal = dashboardMode === 'local'
@@ -551,9 +552,23 @@ export function TaskBoardPanel() {
   // Poll as SSE fallback — pauses when SSE is delivering events
   useSmartPoll(fetchData, 30000, { pauseWhenSseConnected: true })
 
+  // Filter tasks by search query
+  const searchLower = searchQuery.trim().toLowerCase()
+  const filteredTasks = searchLower
+    ? tasks.filter(task => {
+        const titleMatch = task.title.toLowerCase().includes(searchLower)
+        const descMatch = task.description?.toLowerCase().includes(searchLower)
+        const assigneeMatch = task.assigned_to?.toLowerCase().includes(searchLower)
+        const tagMatch = task.tags?.some(tag => tag.toLowerCase().includes(searchLower))
+        const ticketMatch = task.ticket_ref?.toLowerCase().includes(searchLower)
+        const idMatch = String(task.id) === searchLower
+        return titleMatch || descMatch || assigneeMatch || tagMatch || ticketMatch || idMatch
+      })
+    : tasks
+
   // Group tasks by status, overriding for awaiting_owner detection
   const tasksByStatus = statusColumns.reduce((acc, column) => {
-    acc[column.key] = tasks.filter(task => {
+    acc[column.key] = filteredTasks.filter(task => {
       const effectiveStatus = detectAwaitingOwner(task) ? 'awaiting_owner' : task.status
       return effectiveStatus === column.key
     })
@@ -810,6 +825,32 @@ export function TaskBoardPanel() {
             <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 6l4 4 4-4" />
             </svg>
+          </div>
+          {/* Search input */}
+          <div className="relative">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="6.5" cy="6.5" r="4.5" />
+              <path d="M10.5 10.5l3 3" />
+            </svg>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t('searchPlaceholder')}
+              aria-label={t('searchPlaceholder')}
+              className="h-9 pl-8 pr-8 w-48 bg-surface-1 text-foreground border border-border rounded-md text-sm placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                aria-label={t('clearSearch')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M4 4l8 8M12 4l-8 8" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
         <div className="flex gap-2">
@@ -1117,7 +1158,9 @@ export function TaskBoardPanel() {
                     <rect x="3" y="3" width="18" height="18" rx="2" />
                     <path d="M9 12h6M12 9v6" strokeLinecap="round" />
                   </svg>
-                  <span className="text-xs">{t('dropTasksHere')}</span>
+                  <span className="text-xs text-center px-2">
+                    {searchLower ? t('noTasksMatchSearch', { query: searchQuery }) : t('dropTasksHere')}
+                  </span>
                 </div>
               )}
             </div>

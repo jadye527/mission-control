@@ -20,63 +20,10 @@ interface DispatchableTask {
   ticket_prefix: string | null
   project_ticket_no: number | null
   project_id: number | null
+  retry_count: number
   tags?: string[]
 }
 
-// ---------------------------------------------------------------------------
-// Model routing
-// ---------------------------------------------------------------------------
-
-/**
- * Classify a task's complexity and return the appropriate model ID to pass
- * to the OpenClaw gateway. Uses keyword signals on title + description.
- *
- * Tiers:
- *   ROUTINE  → cheap model (Haiku)   — file ops, status checks, formatting
- *   MODERATE → mid model  (Sonnet)   — code gen, summaries, analysis, drafts
- *   COMPLEX  → premium model (Opus)  — debugging, architecture, novel problems
- *
- * The caller may override this by setting agent.config.dispatchModel.
- */
-function classifyTaskModel(task: DispatchableTask): string | null {
-  // Allow per-agent config override
-  if (task.agent_config) {
-    try {
-      const cfg = JSON.parse(task.agent_config)
-      if (typeof cfg.dispatchModel === 'string' && cfg.dispatchModel) return cfg.dispatchModel
-    } catch { /* ignore */ }
-  }
-
-  const text = `${task.title} ${task.description ?? ''}`.toLowerCase()
-  const priority = task.priority?.toLowerCase() ?? ''
-
-  // Complex signals → Opus
-  const complexSignals = [
-    'debug', 'diagnos', 'architect', 'design system', 'security audit',
-    'root cause', 'investigate', 'incident', 'failure', 'broken', 'not working',
-    'refactor', 'migration', 'performance optim', 'why is',
-  ]
-  if (priority === 'critical' || complexSignals.some(s => text.includes(s))) {
-    return '9router/cc/claude-opus-4-6'
-  }
-
-  // Routine signals → Haiku
-  const routineSignals = [
-    'status check', 'health check', 'ping', 'list ', 'fetch ', 'format',
-    'rename', 'move file', 'read file', 'update readme', 'bump version',
-    'send message', 'post to', 'notify', 'summarize', 'translate',
-    'quick ', 'simple ', 'routine ', 'minor ',
-  ]
-  if (priority === 'low' && routineSignals.some(s => text.includes(s))) {
-    return '9router/cc/claude-haiku-4-5-20251001'
-  }
-  if (routineSignals.some(s => text.includes(s)) && priority !== 'high' && priority !== 'critical') {
-    return '9router/cc/claude-haiku-4-5-20251001'
-  }
-
-  // Default: let the agent's own configured model handle it (no override)
-  return null
-}
 
 /** Extract the gateway agent identifier from the agent's config JSON.
  *  Falls back to agent_name (display name) if openclawId is not set. */
@@ -96,7 +43,12 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
     : `TASK-${task.id}`
 
   const lines = [
-    'You have been assigned a task in Mission Control.',
+    'IMPORTANT: You are being dispatched to complete ONE specific task.',
+    '- Do not reference other assigned tasks or plan to parallelize.',
+    '- Do not say "I will do X" — just do X and report what you did.',
+    '- Your response is your resolution. If you cannot complete the task, say exactly why with specific blockers.',
+    '- Never return "HEARTBEAT_OK" as a resolution.',
+    '- WAIT RULE: Do not submit a resolution while you are still running a script, waiting for a subagent, or have an active coding session in progress. Stay in your current state until the work is fully complete. Only submit a resolution when you have actual deliverables to report.',
     '',
     `**[${ticket}] ${task.title}**`,
     `Priority: ${task.priority}`,
@@ -110,7 +62,8 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
     lines.push('', task.description)
   }
 
-  if (rejectionFeedback) {
+  // Only include rejection feedback on the first retry — subsequent retries escalate instead
+  if (rejectionFeedback && task.retry_count <= 1) {
     lines.push('', '## Previous Review Feedback', rejectionFeedback, '', 'Please address this feedback in your response.')
   }
 
@@ -282,8 +235,8 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
 
       // Use `openclaw agent` directly — more reliable than gateway WebSocket call
       const finalResult = await runOpenClaw(
-        ['agent', '--agent', reviewAgent, '--message', prompt, '--timeout', '120'],
-        { timeoutMs: 125_000 }
+        ['agent', '--agent', reviewAgent, '--message', prompt, '--timeout', '300'],
+        { timeoutMs: 310_000 }
       )
       const agentResponse: AgentResponseParsed = {
         text: finalResult.stdout.trim() || null,
@@ -368,15 +321,31 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
       const errorMsg = err.message || 'Unknown error'
       logger.error({ taskId: task.id, err }, 'Aegis review failed')
 
-      // Revert to review so it can be retried
-      db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?')
-        .run('review', Math.floor(Date.now() / 1000), task.id)
+      // If a prior approved QR exists (e.g. approved before a restart), honour it and close
+      const priorApproval = db.prepare(
+        "SELECT id FROM quality_reviews WHERE task_id = ? AND status = 'approved' LIMIT 1"
+      ).get(task.id) as { id: number } | undefined
 
-      eventBus.broadcast('task.status_changed', {
-        id: task.id,
-        status: 'review',
-        previous_status: 'quality_review',
-      })
+      if (priorApproval) {
+        const finalStatus = resolutionRequiresOwnerAction(task.resolution) ? 'awaiting_owner' : 'done'
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
+          .run(finalStatus, Math.floor(Date.now() / 1000), task.id, 'quality_review')
+        eventBus.broadcast('task.status_changed', {
+          id: task.id,
+          status: finalStatus,
+          previous_status: 'quality_review',
+        })
+        logger.info({ taskId: task.id }, `Aegis timeout — honoured prior approval, set to ${finalStatus}`)
+      } else {
+        // Revert to review so it can be retried — only if still in quality_review
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
+          .run('review', Math.floor(Date.now() / 1000), task.id, 'quality_review')
+        eventBus.broadcast('task.status_changed', {
+          id: task.id,
+          status: 'review',
+          previous_status: 'quality_review',
+        })
+      }
 
       results.push({ id: task.id, verdict: 'error', error: errorMsg.substring(0, 100) })
     }
@@ -506,7 +475,6 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       } else {
         // Step 1: Invoke via gateway (new session)
         const gatewayAgentId = resolveGatewayAgentId(task)
-        const dispatchModel = classifyTaskModel(task)
         const invokeParams: Record<string, unknown> = {
           message: prompt,
           agentId: gatewayAgentId,
@@ -518,6 +486,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         // which causes retry loops and stale in_progress tasks. Keep classification
         // logic in place for future compatibility, but do not send it here.
         void dispatchModel
+        // Model overrides are not supported by the gateway for agent="main".
+        // Let each agent use its own configured default model.
 
         // Use --expect-final to block until the agent completes and returns the full
         // response payload (result.payloads[0].text). The two-step agent → agent.wait
@@ -539,6 +509,62 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       if (!agentResponse.text) {
         throw new Error('Agent returned empty response')
+      }
+
+      // Detect administrative responses that are not actual work products.
+      // These patterns indicate the agent talked about the task instead of doing it.
+      const ADMIN_PATTERNS = [
+        /^I('ve| have) got (two|multiple|several) assigned tasks/i,
+        /^Writing the .* (file|code|PRD|doc) now/i,
+        /^I can'?t safely .* (continue|resume)/i,
+        /^HEARTBEAT_OK/,
+        /^(All deliverables are already|The (file|work) (exists|was already))/i,
+        /^I('m| am) going to (start the split|parallelize|spawn)/i,
+      ]
+      const isAdminResponse = ADMIN_PATTERNS.some(p => p.test(agentResponse.text!.trim()))
+      if (isAdminResponse) {
+        throw new Error(
+          `Agent returned administrative response instead of work product: "${agentResponse.text!.substring(0, 150)}"`
+        )
+      }
+
+      // If this is a repeated failure (retry > 1), escalate to awaiting_owner
+      // rather than cycling through Aegis again.
+      if (task.retry_count > 1) {
+        const escalateMsg = `Escalated after ${task.retry_count} retries — agent unable to produce acceptable work. Owner review required.`
+        db.prepare('UPDATE tasks SET status = ?, error_message = ?, resolution = ?, updated_at = ? WHERE id = ?')
+          .run('awaiting_owner', escalateMsg, agentResponse.text, Math.floor(Date.now() / 1000), task.id)
+
+        eventBus.broadcast('task.status_changed', {
+          id: task.id,
+          status: 'awaiting_owner',
+          previous_status: 'in_progress',
+        })
+
+        db_helpers.createNotification(
+          'admin',
+          'awaiting_owner',
+          'Task escalated after repeated failures',
+          `Task "${task.title}" failed ${task.retry_count} times and needs owner review.`,
+          'task',
+          task.id,
+          task.workspace_id
+        )
+
+        db_helpers.logActivity(
+          'task_escalated',
+          'task',
+          task.id,
+          'scheduler',
+          `Task "${task.title}" escalated to awaiting_owner after ${task.retry_count} retries`,
+          { retry_count: task.retry_count },
+          task.workspace_id
+        )
+
+        recordSuccess(task.id)
+        results.push({ id: task.id, success: true })
+        logger.warn({ taskId: task.id, retryCount: task.retry_count }, 'Task escalated to awaiting_owner')
+        continue
       }
 
       const truncated = agentResponse.text.length > 10_000
@@ -607,8 +633,9 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       handleDispatchQuotaError(errorMsg)
       handleCliWatchdogTimeout(errorMsg)
 
-      // Revert to assigned so it can be retried on the next tick
-      db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')
+      // Revert to assigned so it can be retried on the next tick.
+      // Also persist retry_count to DB so it survives server restarts.
+      db.prepare('UPDATE tasks SET status = ?, error_message = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?')
         .run('assigned', errorMsg.substring(0, 5000), Math.floor(Date.now() / 1000), task.id)
 
       eventBus.broadcast('task.status_changed', {

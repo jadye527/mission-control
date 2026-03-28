@@ -124,10 +124,11 @@ function seedAdminUserFromEnv(dbConn: Database.Database): void {
   // Skip seeding during `next build` — env vars may not be available yet
   if (process.env.NEXT_PHASE === 'phase-production-build') return
 
-  const count = (dbConn.prepare('SELECT COUNT(*) as count FROM users').get() as CountRow).count
-  if (count > 0) return
+  const authUser = process.env.AUTH_USER || 'admin'
+  const existing = dbConn.prepare('SELECT id FROM users WHERE username = ?').get(authUser)
+  if (existing) return
 
-  const username = process.env.AUTH_USER || 'admin'
+  const username = authUser
   const password = resolveSeedAuthPassword()
 
   if (!password) {

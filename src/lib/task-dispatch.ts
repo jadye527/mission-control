@@ -64,7 +64,15 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
 
   // Only include rejection feedback on the first retry — subsequent retries escalate instead
   if (rejectionFeedback && task.retry_count <= 1) {
-    lines.push('', '## Previous Review Feedback', rejectionFeedback, '', 'Please address this feedback in your response.')
+    lines.push(
+      '',
+      '## ⚠️ IMPORTANT: Your Previous Attempt Was Rejected',
+      'Aegis (quality reviewer) rejected your last response. Read the feedback below and address EVERY point before submitting:',
+      '',
+      rejectionFeedback,
+      '',
+      'Do not resubmit without addressing the feedback above.',
+    )
   }
 
   lines.push('', 'Complete this task and provide your response. Be concise and actionable.')
@@ -167,6 +175,11 @@ function buildReviewPrompt(task: ReviewableTask): string {
     'If the work needs improvement:',
     'VERDICT: REJECTED',
     'NOTES: <specific issues that need to be fixed>',
+    '',
+    'IMPORTANT: When rejecting, be concrete and actionable:',
+    '- State exactly what is missing or wrong (do not be vague)',
+    '- Tell the agent the specific action to take (e.g., "Save the file to company/research/foo.md", "Include a code example", "Fix the endpoint URL to https://...")',
+    '- The agent will see this feedback and has ONE chance to fix it before escalation — make feedback actionable so they can succeed',
   )
 
   return lines.join('\n')

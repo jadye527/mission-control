@@ -289,7 +289,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
         }
       } else {
         // Rejected: push back to assigned so dispatcher re-sends with feedback
-        db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')
+        db.prepare('UPDATE tasks SET status = ?, error_message = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?')
           .run('assigned', `Aegis rejected: ${verdict.notes}`, Math.floor(Date.now() / 1000), task.id)
 
         eventBus.broadcast('task.status_changed', {
@@ -483,9 +483,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         }
         // Model override intentionally disabled for gateway agent calls.
         // Current gateway validation rejects arbitrary top-level `model` params,
-        // which causes retry loops and stale in_progress tasks. Keep classification
-        // logic in place for future compatibility, but do not send it here.
-        void dispatchModel
+        // which causes retry loops and stale in_progress tasks.
         // Model overrides are not supported by the gateway for agent="main".
         // Let each agent use its own configured default model.
 

@@ -184,8 +184,8 @@ function getDbStats(workspaceId: number) {
     let pipelineActive = 0
     let pipelineRecent = 0
     try {
-      pipelineActive = (db.prepare("SELECT COUNT(*) as c FROM pipeline_runs WHERE status = 'running'").get() as any).c
-      pipelineRecent = (db.prepare('SELECT COUNT(*) as c FROM pipeline_runs WHERE created_at > ?').get(day) as any).c
+      pipelineActive = (db.prepare("SELECT COUNT(*) as c FROM pipeline_runs WHERE workspace_id = ? AND status = 'running'").get(workspaceId) as any).c
+      pipelineRecent = (db.prepare('SELECT COUNT(*) as c FROM pipeline_runs WHERE workspace_id = ? AND created_at > ?').get(workspaceId, day) as any).c
     } catch {
       // Pipeline tables may not exist yet
     }

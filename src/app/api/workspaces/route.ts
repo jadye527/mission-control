@@ -48,25 +48,40 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid slug' }, { status: 400 })
     }
 
-    // Check uniqueness
-    const existing = db.prepare('SELECT id FROM workspaces WHERE slug = ?').get(resolvedSlug)
+    // Check uniqueness within the tenant.
+    const existing = db.prepare('SELECT id FROM workspaces WHERE slug = ? AND tenant_id = ?').get(resolvedSlug, tenantId)
     if (existing) {
       return NextResponse.json({ error: 'Workspace slug already exists' }, { status: 409 })
     }
 
     const now = Math.floor(Date.now() / 1000)
-    const result = db.prepare(
-      'INSERT INTO workspaces (slug, name, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(resolvedSlug, name.trim(), tenantId, now, now)
+    const result = db.transaction(() => {
+      const inserted = db.prepare(
+        'INSERT INTO workspaces (slug, name, tenant_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(resolvedSlug, name.trim(), tenantId, now, now)
+      const workspaceId = Number(inserted.lastInsertRowid)
 
-    const workspace = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(result.lastInsertRowid)
+      db.prepare(`
+        INSERT INTO tenant_memberships (
+          user_id, tenant_id, workspace_id, role, status, is_default, invited_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'active', 0, NULL, ?, ?)
+        ON CONFLICT(user_id, workspace_id) DO UPDATE SET
+          role = excluded.role,
+          status = 'active',
+          updated_at = excluded.updated_at
+      `).run(auth.user.id, tenantId, workspaceId, auth.user.role, now, now)
+
+      return workspaceId
+    })()
+
+    const workspace = db.prepare('SELECT * FROM workspaces WHERE id = ? AND tenant_id = ?').get(result, tenantId)
 
     logAuditEvent({
       action: 'workspace_created',
       actor: auth.user.username,
       actor_id: auth.user.id,
       target_type: 'workspace',
-      target_id: Number(result.lastInsertRowid),
+      target_id: result,
       detail: { name: name.trim(), slug: resolvedSlug },
     })
 

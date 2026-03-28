@@ -347,6 +347,13 @@ export default function LoginPage() {
           </Button>
         </form>
 
+        <div className="mt-4 text-center text-xs text-muted-foreground">
+          Need an account?{' '}
+          <a href="/register" className="text-primary hover:underline">
+            Create a workspace
+          </a>
+        </div>
+
         <p className="text-center text-xs text-muted-foreground mt-6">{t('orchestrationTagline')}</p>
       </div>
     </div>

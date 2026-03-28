@@ -19,6 +19,15 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
     component: 'MetricCardsWidget',
   },
   {
+    id: 'owner-cockpit',
+    label: 'Owner Cockpit',
+    description: 'Operational metrics — API cost, trades, signal freshness, heartbeat errors',
+    category: 'metrics',
+    modes: ['local', 'full'],
+    defaultSize: 'lg',
+    component: 'OwnerCockpitWidget',
+  },
+  {
     id: 'runtime-health',
     label: 'Runtime Health',
     description: 'Local OS, Claude, Codex, and MC core health',
@@ -103,6 +112,7 @@ export const WIDGET_CATALOG: DashboardWidget[] = [
 
 export const LOCAL_DEFAULT_LAYOUT = [
   'metric-cards',
+  'owner-cockpit',
   'runtime-health',
   'session-workbench',
   'event-stream',
@@ -113,6 +123,7 @@ export const LOCAL_DEFAULT_LAYOUT = [
 
 export const GATEWAY_DEFAULT_LAYOUT = [
   'metric-cards',
+  'owner-cockpit',
   'gateway-health',
   'session-workbench',
   'event-stream',

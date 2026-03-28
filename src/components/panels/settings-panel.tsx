@@ -29,6 +29,17 @@ interface ApiKeyInfo {
   last_rotated_by: string | null
 }
 
+interface PersonalApiKey {
+  id: number
+  label: string
+  key_prefix: string
+  role: 'admin' | 'operator' | 'viewer'
+  expires_at: number | null
+  last_used_at: number | null
+  is_revoked: number
+  created_at: number
+}
+
 interface CoordinatorTargetAgent {
   name: string
   openclawId: string
@@ -122,6 +133,10 @@ export function SettingsPanel() {
   const [apiKeyInfo, setApiKeyInfo] = useState<ApiKeyInfo | null>(null)
   const [apiKeyLoading, setApiKeyLoading] = useState(false)
   const [newApiKey, setNewApiKey] = useState<string | null>(null)
+  const [personalApiKeys, setPersonalApiKeys] = useState<PersonalApiKey[]>([])
+  const [personalKeyLabel, setPersonalKeyLabel] = useState('')
+  const [personalKeyValue, setPersonalKeyValue] = useState<string | null>(null)
+  const [personalKeyLoading, setPersonalKeyLoading] = useState(false)
   const [rotateConfirm, setRotateConfirm] = useState(false)
   const [rotating, setRotating] = useState(false)
   const [keyCopied, setKeyCopied] = useState(false)
@@ -268,6 +283,65 @@ export function SettingsPanel() {
     }
   }, [])
 
+  const fetchPersonalApiKeys = useCallback(async () => {
+    setPersonalKeyLoading(true)
+    try {
+      const res = await fetch('/api/v1/auth/api-keys', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json().catch(() => ({}))
+      setPersonalApiKeys(Array.isArray(data?.api_keys) ? data.api_keys : [])
+    } finally {
+      setPersonalKeyLoading(false)
+    }
+  }, [])
+
+  const handleCreatePersonalKey = async () => {
+    if (!personalKeyLabel.trim()) return
+    setPersonalKeyLoading(true)
+    try {
+      const res = await fetch('/api/v1/auth/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: personalKeyLabel.trim() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setPersonalKeyValue(data.api_key || null)
+        setPersonalKeyLabel('')
+        showFeedback(true, 'Personal API key created')
+        fetchPersonalApiKeys()
+      } else {
+        showFeedback(false, data.error || 'Failed to create personal API key')
+      }
+    } catch {
+      showFeedback(false, 'Network error')
+    } finally {
+      setPersonalKeyLoading(false)
+    }
+  }
+
+  const handleRevokePersonalKey = async (id: number) => {
+    setPersonalKeyLoading(true)
+    try {
+      const res = await fetch('/api/v1/auth/api-keys', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        showFeedback(true, 'Personal API key revoked')
+        fetchPersonalApiKeys()
+      } else {
+        showFeedback(false, data.error || 'Failed to revoke personal API key')
+      }
+    } catch {
+      showFeedback(false, 'Network error')
+    } finally {
+      setPersonalKeyLoading(false)
+    }
+  }
+
   const handleRotateKey = async () => {
     setRotating(true)
     try {
@@ -317,7 +391,7 @@ export function SettingsPanel() {
     } catch { /* non-critical */ }
   }, [])
 
-  useEffect(() => { fetchSettings(); fetchApiKeyInfo(); fetchHermesStatus() }, [fetchSettings, fetchApiKeyInfo, fetchHermesStatus])
+  useEffect(() => { fetchSettings(); fetchApiKeyInfo(); fetchPersonalApiKeys(); fetchHermesStatus() }, [fetchSettings, fetchApiKeyInfo, fetchPersonalApiKeys, fetchHermesStatus])
 
   const handleEdit = (key: string, value: string) => {
     setEdits(prev => ({ ...prev, [key]: value }))
@@ -525,6 +599,57 @@ export function SettingsPanel() {
             >
               {gwBackupRunning ? t('backingUp') : t('backupGatewayState')}
             </Button>
+          </div>
+
+          {/* Scheduled OpenClaw Backup */}
+          <div className="flex items-center gap-3 p-3 bg-surface-1/50 border border-border/30 rounded-lg">
+            <div className="flex-1">
+              <p className="text-xs font-medium">Scheduled OpenClaw Backup</p>
+              <p className="text-2xs text-muted-foreground">Auto-backup OpenClaw state on a schedule. Daily = config only; Weekly = full backup with workspaces.</p>
+            </div>
+            <select
+              className="text-2xs bg-surface-2 border border-border/50 rounded px-2 py-1"
+              value={settings.find(s => s.key === 'general.openclaw_backup_schedule')?.value ?? 'daily'}
+              onChange={async (e) => {
+                await fetch('/api/settings', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ settings: { 'general.openclaw_backup_schedule': e.target.value } }),
+                })
+                setSettings(prev => {
+                  const exists = prev.find(s => s.key === 'general.openclaw_backup_schedule')
+                  if (exists) return prev.map(s => s.key === 'general.openclaw_backup_schedule' ? { ...s, value: e.target.value } : s)
+                  return [...prev, { key: 'general.openclaw_backup_schedule', value: e.target.value, category: 'general' } as typeof prev[0]]
+                })
+              }}
+              disabled={settings.find(s => s.key === 'general.openclaw_backup_enabled')?.value !== 'true'}
+            >
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+            </select>
+            <button
+              onClick={async () => {
+                const current = settings.find(s => s.key === 'general.openclaw_backup_enabled')?.value === 'true'
+                const next = !current
+                await fetch('/api/settings', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ settings: { 'general.openclaw_backup_enabled': String(next) } }),
+                })
+                setSettings(prev => {
+                  const exists = prev.find(s => s.key === 'general.openclaw_backup_enabled')
+                  if (exists) return prev.map(s => s.key === 'general.openclaw_backup_enabled' ? { ...s, value: String(next) } : s)
+                  return [...prev, { key: 'general.openclaw_backup_enabled', value: String(next), category: 'general' } as typeof prev[0]]
+                })
+              }}
+              className={`w-10 h-5 rounded-full relative transition-colors select-none ${
+                settings.find(s => s.key === 'general.openclaw_backup_enabled')?.value === 'true' ? 'bg-primary' : 'bg-muted'
+              }`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                settings.find(s => s.key === 'general.openclaw_backup_enabled')?.value === 'true' ? 'left-5' : 'left-0.5'
+              }`} />
+            </button>
           </div>
 
           {/* Replay Onboarding */}
@@ -781,6 +906,55 @@ export function SettingsPanel() {
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="bg-card border border-border rounded-lg p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-medium text-foreground">Personal API Keys</div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Create tenant-scoped API keys for your own scripts and integrations without rotating the shared admin key.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={personalKeyLabel}
+                onChange={(e) => setPersonalKeyLabel(e.target.value)}
+                className="h-9 flex-1 rounded-md border border-border bg-secondary px-3 text-sm text-foreground"
+                placeholder="Key label"
+              />
+              <Button onClick={handleCreatePersonalKey} disabled={!personalKeyLabel.trim() || personalKeyLoading} size="sm">
+                {personalKeyLoading ? 'Working...' : 'Create key'}
+              </Button>
+            </div>
+
+            {personalKeyValue && (
+              <div className="mt-3 rounded-lg border border-green-500/20 bg-green-500/10 p-3">
+                <div className="text-xs font-medium text-green-200 mb-2">Copy this key now. It will not be shown again.</div>
+                <code className="block break-all rounded bg-background px-2 py-1.5 text-xs text-foreground">{personalKeyValue}</code>
+              </div>
+            )}
+
+            <div className="mt-3 space-y-2">
+              {personalApiKeys.map((key) => (
+                <div key={key.id} className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-foreground">{key.label}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {key.key_prefix} • {key.role} • {key.last_used_at ? `last used ${new Date(key.last_used_at * 1000).toLocaleString()}` : 'unused'}
+                    </div>
+                  </div>
+                  <Button variant="outline" size="xs" onClick={() => handleRevokePersonalKey(key.id)} disabled={personalKeyLoading || key.is_revoked === 1}>
+                    {key.is_revoked === 1 ? 'Revoked' : 'Revoke'}
+                  </Button>
+                </div>
+              ))}
+              {!personalKeyLoading && personalApiKeys.length === 0 && (
+                <div className="text-xs text-muted-foreground">No personal API keys yet.</div>
+              )}
+            </div>
           </div>
         </div>
       )}

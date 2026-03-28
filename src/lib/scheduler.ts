@@ -2,8 +2,10 @@ import { getDatabase, logAuditEvent } from './db'
 import { syncAgentsFromConfig } from './agent-sync'
 import { config, ensureDirExists } from './config'
 import { join, dirname } from 'path'
-import { readdirSync, statSync, unlinkSync } from 'fs'
+import { readdirSync, statSync, unlinkSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 import { logger } from './logger'
+import { runOpenClaw } from './command'
 import { processWebhookRetries } from './webhooks'
 import { syncClaudeSessions } from './claude-sessions'
 import { pruneGatewaySessionsOlderThan } from './sessions'
@@ -88,6 +90,50 @@ async function runBackup(): Promise<{ ok: boolean; message: string }> {
     return { ok: true, message: `Backup created (${sizeKB}KB)` }
   } catch (err: any) {
     return { ok: false, message: `Backup failed: ${err.message}` }
+  }
+}
+
+/** Run a scheduled OpenClaw backup (daily no-workspace or weekly full) */
+async function runOpenClawBackup(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const schedule = (() => {
+      try {
+        const db = getDatabase()
+        const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('general.openclaw_backup_schedule') as { value: string } | undefined
+        return row?.value || 'daily'
+      } catch { return 'daily' }
+    })()
+
+    const baseDir = join(homedir(), 'openclaw-backups')
+    const subdir = schedule === 'weekly' ? 'weekly' : 'daily'
+    const outputDir = join(baseDir, subdir)
+    try { mkdirSync(outputDir, { recursive: true }) } catch { /* already exists */ }
+
+    const args = schedule === 'weekly'
+      ? ['backup', 'create', '--output', outputDir + '/']
+      : ['backup', 'create', '--no-include-workspace', '--output', outputDir + '/']
+
+    const result = await runOpenClaw(args, { timeoutMs: 120_000 })
+    const ok = result.code === 0 || result.stdout.includes('Backup archive') || result.stderr.includes('Backup archive')
+    const output = (result.stdout || result.stderr || '').trim().split('\n').pop() || ''
+
+    if (ok) {
+      // Lifecycle pruning
+      const retentionDays = schedule === 'weekly' ? 30 : 14
+      const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
+      try {
+        readdirSync(outputDir)
+          .filter(f => f.endsWith('.tar.gz'))
+          .filter(f => statSync(join(outputDir, f)).mtimeMs < cutoff)
+          .forEach(f => unlinkSync(join(outputDir, f)))
+      } catch { /* best-effort */ }
+
+      logAuditEvent({ action: 'openclaw_backup', actor: 'scheduler', detail: { schedule, output } })
+      return { ok: true, message: `OpenClaw ${schedule} backup complete: ${output}` }
+    }
+    return { ok: false, message: `OpenClaw backup failed (exit ${result.code}): ${output}` }
+  } catch (err: any) {
+    return { ok: false, message: `OpenClaw backup error: ${err.message}` }
   }
 }
 
@@ -340,6 +386,15 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('openclaw_backup', {
+    name: 'OpenClaw Backup',
+    intervalMs: DAILY_MS,
+    lastRun: null,
+    nextRun: now + getNextDailyMs(6), // Next 6 AM UTC (matches daily cron)
+    enabled: true,
+    running: false,
+  })
+
   // Start the tick loop
   tickInterval = setInterval(tick, TICK_MS)
   logger.info('Scheduler initialized - backup at ~3AM, cleanup at ~4AM, heartbeat every 5m, webhook/claude/skill/local-agent/gateway-agent sync every 60s')
@@ -375,6 +430,7 @@ async function tick() {
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'inbox_triage' ? 'general.inbox_triage'
+      : id === 'openclaw_backup' ? 'general.openclaw_backup_enabled'
       : 'general.agent_heartbeat'
     const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'inbox_triage'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
@@ -392,6 +448,7 @@ async function tick() {
         : id === 'aegis_review' ? await runAegisReviews()
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
         : id === 'inbox_triage' ? await runInboxTriage()
+        : id === 'openclaw_backup' ? await runOpenClawBackup()
         : await runCleanup()
       task.lastResult = { ...result, timestamp: now }
     } catch (err: any) {
@@ -428,6 +485,7 @@ export function getSchedulerStatus() {
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'inbox_triage' ? 'general.inbox_triage'
+      : id === 'openclaw_backup' ? 'general.openclaw_backup_enabled'
       : 'general.agent_heartbeat'
     const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'inbox_triage'
     result.push({
@@ -458,6 +516,7 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'aegis_review') return runAegisReviews()
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'inbox_triage') return runInboxTriage()
+  if (taskId === 'openclaw_backup') return runOpenClawBackup()
   return { ok: false, message: `Unknown task: ${taskId}` }
 }
 

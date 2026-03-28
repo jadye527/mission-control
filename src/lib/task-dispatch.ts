@@ -4,6 +4,7 @@ import { callOpenClawGateway } from './openclaw-gateway'
 import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { canDispatch, recordSuccess, recordFailure } from './circuit-breaker'
+import { handleDispatchQuotaError, handleCliWatchdogTimeout } from './provider-cooldown'
 
 interface DispatchableTask {
   id: number
@@ -480,6 +481,11 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           idempotencyKey: `task-dispatch-${task.id}-${Date.now()}`,
           deliver: false,
         }
+        // Model override intentionally disabled for gateway agent calls.
+        // Current gateway validation rejects arbitrary top-level `model` params,
+        // which causes retry loops and stale in_progress tasks. Keep classification
+        // logic in place for future compatibility, but do not send it here.
+        void dispatchModel
         // Model overrides are not supported by the gateway for agent="main".
         // Let each agent use its own configured default model.
 
@@ -624,6 +630,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       const errorMsg = err.message || 'Unknown error'
       logger.error({ taskId: task.id, agent: task.agent_name, err }, 'Task dispatch failed')
       recordFailure(task.id, errorMsg.substring(0, 200))
+      handleDispatchQuotaError(errorMsg)
+      handleCliWatchdogTimeout(errorMsg)
 
       // Revert to assigned so it can be retried on the next tick.
       // Also persist retry_count to DB so it survives server restarts.

@@ -25,7 +25,7 @@ const MAX_CONSECUTIVE_FAILURES = 3
 const MAX_RETRIES_PER_HOUR = 8
 const BASE_BACKOFF_MS = 30_000       // 30s
 const MAX_BACKOFF_MS = 300_000       // 5 min
-const COOLDOWN_MS = 600_000          // 10 min after circuit trips
+const COOLDOWN_MS = 1_800_000        // 30 min after circuit trips (was 10 min — too aggressive)
 const HOUR_MS = 3_600_000
 
 // In-memory failure tracking (reset on server restart)

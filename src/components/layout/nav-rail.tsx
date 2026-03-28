@@ -126,7 +126,7 @@ const gatewayOnlyPanels = new Set([
 const adminOnlyPanels = new Set<string>([])
 
 export function NavRail() {
-  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useMissionControl()
+  const { activeTab, connection, dashboardMode, currentUser, activeTenant, tenants, osUsers, setActiveTenant, fetchTenants, fetchOsUsers, activeWorkspace, workspaces, setActiveWorkspace, fetchWorkspaces, activeProject, projects, setActiveProject, fetchProjects, sidebarExpanded, collapsedGroups, toggleSidebar, toggleGroup, defaultOrgName, interfaceMode, setInterfaceMode } = useMissionControl()
   const navigateToPanel = useNavigateToPanel()
   const prefetchPanel = usePrefetchPanel()
   const tn = useTranslations('nav')
@@ -154,14 +154,17 @@ export function NavRail() {
     })
   }
 
-  // Fetch tenants, OS users, and projects for admin users
+  // Fetch member workspace context for all users, plus admin org context when available.
   useEffect(() => {
+    if (currentUser) {
+      fetchWorkspaces()
+    }
     if (isAdmin) {
       fetchTenants()
       fetchOsUsers()
       fetchProjects()
     }
-  }, [isAdmin, fetchTenants, fetchOsUsers, fetchProjects])
+  }, [currentUser, isAdmin, fetchTenants, fetchOsUsers, fetchProjects, fetchWorkspaces])
 
   // Re-fetch projects and clear active project when tenant changes
   useEffect(() => {
@@ -450,6 +453,9 @@ export function NavRail() {
           isAdmin={isAdmin}
           isLocal={isLocal}
           isConnected={connection.isConnected}
+          activeWorkspace={activeWorkspace}
+          workspaces={workspaces}
+          onSwitchWorkspace={setActiveWorkspace}
           tenants={tenants}
           osUsers={osUsers}
           activeTenant={activeTenant}
@@ -462,6 +468,7 @@ export function NavRail() {
           navigateToPanel={navigateToPanel}
           fetchTenants={fetchTenants}
           fetchOsUsers={fetchOsUsers}
+          fetchWorkspaces={fetchWorkspaces}
           interfaceMode={interfaceMode}
           setInterfaceMode={setInterfaceMode}
           activeTab={activeTab}
@@ -786,11 +793,14 @@ function OrgRow({ label, initial, active, colorClass, onClick, isActiveOrg, proj
   )
 }
 
-function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, osUsers, activeTenant, onSwitchTenant, projects, activeProject, onSwitchProject, expanded, defaultOrgName, navigateToPanel, fetchTenants, fetchOsUsers, interfaceMode, setInterfaceMode, activeTab }: {
+function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, activeWorkspace, workspaces, onSwitchWorkspace, tenants, osUsers, activeTenant, onSwitchTenant, projects, activeProject, onSwitchProject, expanded, defaultOrgName, navigateToPanel, fetchTenants, fetchOsUsers, fetchWorkspaces, interfaceMode, setInterfaceMode, activeTab }: {
   currentUser: import('@/store').CurrentUser | null
   isAdmin: boolean
   isLocal: boolean
   isConnected: boolean
+  activeWorkspace: import('@/store').Workspace | null
+  workspaces: import('@/store').Workspace[]
+  onSwitchWorkspace: (workspace: import('@/store').Workspace | null) => void
   tenants: import('@/store').Tenant[]
   osUsers: import('@/store').OsUser[]
   activeTenant: import('@/store').Tenant | null
@@ -803,6 +813,7 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   navigateToPanel: (panel: string) => void
   fetchTenants: () => Promise<void>
   fetchOsUsers: () => Promise<void>
+  fetchWorkspaces: () => Promise<void>
   interfaceMode: 'essential' | 'full'
   setInterfaceMode: (mode: 'essential' | 'full') => void
   activeTab: string
@@ -824,7 +835,9 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
   const initials = userName.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2)
   const tenantName = activeTenant?.display_name || defaultOrgName
   const projectName = activeProject?.name
-  const contextLine = projectName ? `${tenantName} / ${projectName}` : tenantName
+  const workspaceName = activeWorkspace?.name
+  const workspaceLine = workspaceName && workspaceName !== tenantName ? `${tenantName} / ${workspaceName}` : tenantName
+  const contextLine = projectName ? `${workspaceLine} / ${projectName}` : workspaceLine
   const connectionLabel = isLocal ? tcs('localMode') : isConnected ? tcs('connected') : tcs('disconnected')
   const connectionDotClass = isLocal ? 'bg-void-cyan' : isConnected ? 'bg-green-500' : 'bg-red-500'
 
@@ -987,6 +1000,50 @@ function ContextSwitcher({ currentUser, isAdmin, isLocal, isConnected, tenants, 
                 {tn('activity')}
               </Button>
             </div>
+
+            {workspaces.length > 1 && (
+              <>
+                <div className="mx-2 border-t border-border my-1" />
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[10px] tracking-wider text-muted-foreground/60 font-semibold">WORKSPACES</span>
+                </div>
+                <div className="px-1 pb-1">
+                  {workspaces.map((workspace) => (
+                    <Button
+                      key={workspace.id}
+                      variant="ghost"
+                      onClick={async () => {
+                        if (activeWorkspace?.id === workspace.id) {
+                          setOpen(false)
+                          return
+                        }
+                        try {
+                          const res = await fetch('/api/v1/auth/me', {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ workspace_id: workspace.id }),
+                          })
+                          if (res.ok) {
+                            onSwitchWorkspace(workspace)
+                            await fetchWorkspaces()
+                            setOpen(false)
+                            window.location.reload()
+                          }
+                        } catch {
+                          // Keep the existing workspace selection on network failure.
+                        }
+                      }}
+                      className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 h-auto rounded-md text-xs ${
+                        activeWorkspace?.id === workspace.id ? 'bg-secondary border border-border' : ''
+                      }`}
+                    >
+                      <span className="truncate">{workspace.name}</span>
+                      <span className="text-[10px] text-muted-foreground">{workspace.slug}</span>
+                    </Button>
+                  ))}
+                </div>
+              </>
+            )}
 
             {/* Organizations with nested projects (admin only, always visible) */}
             {isAdmin && (

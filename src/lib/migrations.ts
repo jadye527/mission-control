@@ -1280,6 +1280,203 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON task_dependencies(task_id)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on ON task_dependencies(depends_on_task_id)`)
     }
+  },
+  {
+    id: '043_multi_tenant_auth',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tenant_memberships (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          tenant_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'viewer',
+          status TEXT NOT NULL DEFAULT 'active',
+          is_default INTEGER NOT NULL DEFAULT 0,
+          invited_by INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(user_id, workspace_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tenant_memberships_user_id ON tenant_memberships(user_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tenant_memberships_tenant_id ON tenant_memberships(tenant_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tenant_memberships_workspace_id ON tenant_memberships(workspace_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tenant_memberships_status ON tenant_memberships(status)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS auth_invites (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT NOT NULL,
+          tenant_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          role TEXT NOT NULL DEFAULT 'viewer',
+          token_hash TEXT NOT NULL UNIQUE,
+          token_hint TEXT NOT NULL,
+          invited_by_user_id INTEGER,
+          accepted_by_user_id INTEGER,
+          expires_at INTEGER NOT NULL,
+          accepted_at INTEGER,
+          revoked_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (invited_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+          FOREIGN KEY (accepted_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_invites_email ON auth_invites(email)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_invites_tenant_id ON auth_invites(tenant_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_invites_workspace_id ON auth_invites(workspace_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_invites_expires_at ON auth_invites(expires_at)`)
+
+      const apiKeyCols = db.prepare(`PRAGMA table_info(api_keys)`).all() as Array<{ name: string }>
+      const hasApiKeyTenantId = apiKeyCols.some((col) => col.name === 'tenant_id')
+      if (!hasApiKeyTenantId) {
+        db.exec(`ALTER TABLE api_keys ADD COLUMN tenant_id INTEGER NOT NULL DEFAULT 1`)
+      }
+      db.exec(`
+        UPDATE api_keys
+        SET tenant_id = COALESCE(
+          tenant_id,
+          (
+            SELECT w.tenant_id
+            FROM workspaces w
+            WHERE w.id = api_keys.workspace_id
+            LIMIT 1
+          ),
+          1
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_api_keys_tenant_id ON api_keys(tenant_id)`)
+
+      const agentKeyCols = db.prepare(`PRAGMA table_info(agent_api_keys)`).all() as Array<{ name: string }>
+      const hasAgentKeyTenantId = agentKeyCols.some((col) => col.name === 'tenant_id')
+      if (!hasAgentKeyTenantId) {
+        db.exec(`ALTER TABLE agent_api_keys ADD COLUMN tenant_id INTEGER`)
+      }
+      db.exec(`
+        UPDATE agent_api_keys
+        SET tenant_id = COALESCE(
+          tenant_id,
+          (
+            SELECT w.tenant_id
+            FROM workspaces w
+            WHERE w.id = agent_api_keys.workspace_id
+            LIMIT 1
+          ),
+          1
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_api_keys_tenant_id ON agent_api_keys(tenant_id)`)
+
+      const membershipUsers = db.prepare(`
+        SELECT
+          u.id AS user_id,
+          COALESCE(u.workspace_id, 1) AS workspace_id,
+          COALESCE(w.tenant_id, 1) AS tenant_id,
+          COALESCE(NULLIF(u.role, ''), 'operator') AS role
+        FROM users u
+        LEFT JOIN workspaces w ON w.id = COALESCE(u.workspace_id, 1)
+      `).all() as Array<{ user_id: number; workspace_id: number; tenant_id: number; role: string }>
+
+      const defaultCounts = new Map<number, boolean>()
+      const hasMembershipRows = (db.prepare(`SELECT COUNT(*) AS count FROM tenant_memberships`).get() as { count: number }).count > 0
+      if (!hasMembershipRows) {
+        for (const row of membershipUsers) {
+          const isDefault = defaultCounts.has(row.user_id) ? 0 : 1
+          defaultCounts.set(row.user_id, true)
+          db.prepare(`
+            INSERT OR IGNORE INTO tenant_memberships (
+              user_id, tenant_id, workspace_id, role, status, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'active', ?, unixepoch(), unixepoch())
+          `).run(row.user_id, row.tenant_id, row.workspace_id, row.role, isDefault)
+        }
+      }
+
+      const localTenant = db.prepare(`
+        SELECT id, display_name, linux_user
+        FROM tenants
+        ORDER BY id ASC
+        LIMIT 1
+      `).get() as { id: number; display_name: string; linux_user: string } | undefined
+
+      if (localTenant) {
+        const defaultWorkspace = db.prepare(`
+          SELECT id, name
+          FROM workspaces
+          WHERE tenant_id = ? AND slug = 'default'
+          LIMIT 1
+        `).get(localTenant.id) as { id: number; name: string } | undefined
+
+        if (defaultWorkspace && defaultWorkspace.name === 'Default Workspace') {
+          const ownerUser = db.prepare(`
+            SELECT display_name
+            FROM users
+            ORDER BY CASE WHEN id = 1 THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+          `).get() as { display_name?: string } | undefined
+
+          const preferredName =
+            (ownerUser?.display_name && ownerUser.display_name.trim()) ||
+            (localTenant.display_name && localTenant.display_name.trim()) ||
+            (localTenant.linux_user && localTenant.linux_user.trim()) ||
+            'Owner'
+
+          db.prepare(`
+            UPDATE workspaces
+            SET name = ?, updated_at = unixepoch()
+            WHERE id = ?
+          `).run(`${preferredName} Workspace`, defaultWorkspace.id)
+        }
+      }
+    }
+  },
+  {
+    id: '044_mvp_user_org_fields',
+    up(db: Database.Database) {
+      const userCols = db.prepare(`PRAGMA table_info(users)`).all() as Array<{ name: string }>
+      if (!userCols.some((c) => c.name === 'email')) {
+        db.exec(`ALTER TABLE users ADD COLUMN email TEXT`)
+        db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
+      }
+      if (!userCols.some((c) => c.name === 'org_id')) {
+        db.exec(`ALTER TABLE users ADD COLUMN org_id INTEGER`)
+      }
+      db.exec(`
+        CREATE VIEW IF NOT EXISTS orgs AS
+        SELECT
+          id,
+          display_name AS name,
+          plan_tier     AS plan,
+          created_at
+        FROM tenants
+      `)
+    }
+  },
+  {
+    id: '045_password_reset_tokens',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_token_hash ON password_reset_tokens(token_hash)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_user_id ON password_reset_tokens(user_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_prt_expires_at ON password_reset_tokens(expires_at)`)
+    }
   }
 ]
 

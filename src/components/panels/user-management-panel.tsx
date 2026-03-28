@@ -17,6 +17,13 @@ interface UserRecord {
   is_approved?: number
   created_at: number
   last_login_at: number | null
+  memberships?: Array<{
+    workspace_id: number
+    workspace_name: string
+    workspace_slug: string
+    role: 'admin' | 'operator' | 'viewer'
+    is_default: number
+  }>
 }
 
 interface AccessRequest {
@@ -36,6 +43,20 @@ interface AccessRequest {
   approved_user_id?: number | null
 }
 
+interface InviteRecord {
+  id: number
+  email: string
+  role: 'admin' | 'operator' | 'viewer'
+  workspace_id: number
+  workspace_name: string
+  workspace_slug: string
+  invited_by_username?: string | null
+  expires_at: number
+  accepted_at?: number | null
+  revoked_at?: number | null
+  created_at: number
+}
+
 const roleColors: Record<string, string> = {
   admin: 'bg-red-500/20 text-red-400',
   operator: 'bg-blue-500/20 text-blue-400',
@@ -47,12 +68,16 @@ export function UserManagementPanel() {
   const { currentUser } = useMissionControl()
   const [users, setUsers] = useState<UserRecord[]>([])
   const [requests, setRequests] = useState<AccessRequest[]>([])
+  const [invites, setInvites] = useState<InviteRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const [showCreate, setShowCreate] = useState(false)
   const [createForm, setCreateForm] = useState({ username: '', password: '', display_name: '', role: 'operator' as const })
   const [creating, setCreating] = useState(false)
+  const [inviteForm, setInviteForm] = useState<{ email: string; role: 'admin' | 'operator' | 'viewer' }>({ email: '', role: 'viewer' })
+  const [inviting, setInviting] = useState(false)
+  const [latestInvite, setLatestInvite] = useState<{ token: string; invite_url: string } | null>(null)
 
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState({ display_name: '', role: '' as '' | 'admin' | 'operator' | 'viewer', password: '' })
@@ -70,9 +95,10 @@ export function UserManagementPanel() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [uRes, rRes] = await Promise.all([
+      const [uRes, rRes, iRes] = await Promise.all([
         fetch('/api/auth/users', { cache: 'no-store' }),
         fetch('/api/auth/access-requests?status=all', { cache: 'no-store' }),
+        fetch('/api/v1/auth/invite', { cache: 'no-store' }),
       ])
 
       if (uRes.status === 403 || rRes.status === 403) {
@@ -82,9 +108,11 @@ export function UserManagementPanel() {
 
       const uJson = await uRes.json().catch(() => ({}))
       const rJson = await rRes.json().catch(() => ({}))
+      const iJson = await iRes.json().catch(() => ({}))
 
       setUsers(Array.isArray(uJson?.users) ? uJson.users : [])
       setRequests(Array.isArray(rJson?.requests) ? rJson.requests : [])
+      setInvites(Array.isArray(iJson?.invites) ? iJson.invites : [])
       setError(null)
     } catch {
       setError(t('failedToLoadUsers'))
@@ -124,6 +152,50 @@ export function UserManagementPanel() {
       showFeedback(false, t('networkError'))
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleInvite = async () => {
+    if (!inviteForm.email) return
+    setInviting(true)
+    try {
+      const res = await fetch('/api/v1/auth/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(inviteForm),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        setLatestInvite({ token: data.token, invite_url: data.invite_url })
+        setInviteForm({ email: '', role: 'viewer' })
+        showFeedback(true, `Invite created for ${data.invite?.email || 'user'}`)
+        fetchAll()
+      } else {
+        showFeedback(false, data.error || 'Failed to create invite')
+      }
+    } catch {
+      showFeedback(false, t('networkError'))
+    } finally {
+      setInviting(false)
+    }
+  }
+
+  const revokeInvite = async (inviteId: number) => {
+    try {
+      const res = await fetch('/api/v1/auth/invite', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: inviteId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        showFeedback(true, 'Invite revoked')
+        fetchAll()
+      } else {
+        showFeedback(false, data.error || 'Failed to revoke invite')
+      }
+    } catch {
+      showFeedback(false, t('networkError'))
     }
   }
 
@@ -246,6 +318,64 @@ export function UserManagementPanel() {
           {feedback.text}
         </div>
       )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-border bg-secondary/30 p-4 space-y-3">
+          <div>
+            <h3 className="text-sm font-medium text-foreground">Invite teammate</h3>
+            <p className="text-xs text-muted-foreground">Create a tenant-scoped invite link for a new workspace member.</p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-[1fr_140px_auto]">
+            <input
+              value={inviteForm.email}
+              onChange={(e) => setInviteForm((current) => ({ ...current, email: e.target.value }))}
+              placeholder="teammate@example.com"
+              className="h-9 rounded-md border border-border bg-secondary px-3 text-sm text-foreground"
+            />
+            <select
+              value={inviteForm.role}
+              onChange={(e) => setInviteForm((current) => ({ ...current, role: e.target.value as 'admin' | 'operator' | 'viewer' }))}
+              className="h-9 rounded-md border border-border bg-secondary px-3 text-sm text-foreground"
+            >
+              <option value="viewer">{t('roleViewer')}</option>
+              <option value="operator">{t('roleOperator')}</option>
+              <option value="admin">{t('roleAdmin')}</option>
+            </select>
+            <Button onClick={handleInvite} disabled={!inviteForm.email || inviting} size="sm">
+              {inviting ? 'Inviting...' : 'Invite'}
+            </Button>
+          </div>
+          {latestInvite && (
+            <div className="rounded-md border border-green-500/20 bg-green-500/10 px-3 py-2 text-xs text-green-200 space-y-1">
+              <div>Invite created. Share this URL:</div>
+              <code className="block break-all text-[11px] text-green-100">{latestInvite.invite_url}</code>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-border bg-secondary/30 p-4">
+          <div className="mb-3">
+            <h3 className="text-sm font-medium text-foreground">Pending invites</h3>
+            <p className="text-xs text-muted-foreground">Tenant-level invites for this workspace group.</p>
+          </div>
+          <div className="space-y-2">
+            {invites.filter((invite) => !invite.accepted_at && !invite.revoked_at).slice(0, 5).map((invite) => (
+              <div key={invite.id} className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-xs">
+                <div className="min-w-0">
+                  <div className="font-medium text-foreground truncate">{invite.email}</div>
+                  <div className="text-muted-foreground">
+                    {invite.role} on {invite.workspace_name}
+                  </div>
+                </div>
+                <Button variant="outline" size="xs" onClick={() => revokeInvite(invite.id)}>Revoke</Button>
+              </div>
+            ))}
+            {invites.filter((invite) => !invite.accepted_at && !invite.revoked_at).length === 0 && (
+              <div className="text-xs text-muted-foreground">No active invites.</div>
+            )}
+          </div>
+        </div>
+      </div>
 
       {pendingRequests.length > 0 && (
         <div className="border border-amber-500/30 rounded-lg overflow-hidden">
@@ -439,6 +569,11 @@ export function UserManagementPanel() {
                         <div>
                           <div className="text-sm font-medium text-foreground">{u.display_name}</div>
                           <div className="text-xs text-muted-foreground">{u.email || u.username}</div>
+                          {Array.isArray(u.memberships) && u.memberships.length > 0 && (
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              {u.memberships.map((membership) => membership.workspace_name).join(', ')}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>

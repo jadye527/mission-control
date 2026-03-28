@@ -289,7 +289,7 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
         }
       } else {
         // Rejected: push back to assigned so dispatcher re-sends with feedback
-        db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?')
+        db.prepare('UPDATE tasks SET status = ?, error_message = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?')
           .run('assigned', `Aegis rejected: ${verdict.notes}`, Math.floor(Date.now() / 1000), task.id)
 
         eventBus.broadcast('task.status_changed', {

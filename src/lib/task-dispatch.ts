@@ -234,8 +234,8 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
 
       // Use `openclaw agent` directly — more reliable than gateway WebSocket call
       const finalResult = await runOpenClaw(
-        ['agent', '--agent', reviewAgent, '--message', prompt, '--timeout', '120'],
-        { timeoutMs: 125_000 }
+        ['agent', '--agent', reviewAgent, '--message', prompt, '--timeout', '300'],
+        { timeoutMs: 310_000 }
       )
       const agentResponse: AgentResponseParsed = {
         text: finalResult.stdout.trim() || null,

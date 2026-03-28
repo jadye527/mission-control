@@ -1,0 +1,4 @@
+
+> mission-control@2.0.1 db:compile-migrate /home/jasondye/openclaw-workspace/dashboard-mission-control
+> tsc -p tsconfig.scripts.json
+

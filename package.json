@@ -4,6 +4,11 @@
   "description": "OpenClaw Mission Control — open-source agent orchestration dashboard",
   "scripts": {
     "verify:node": "node scripts/check-node-version.mjs",
+    "api:parity": "node scripts/check-api-contract-parity.mjs --root . --openapi openapi.json --ignore-file scripts/api-contract-parity.ignore",
+    "api:parity:json": "node scripts/check-api-contract-parity.mjs --root . --openapi openapi.json --ignore-file scripts/api-contract-parity.ignore --json",
+    "mc": "node scripts/mc-cli.cjs",
+    "mc:mcp": "node scripts/mc-mcp-server.cjs",
+    "mc:tui": "node scripts/mc-tui.cjs",
     "dev": "pnpm run verify:node && next dev --hostname ${MC_DEV_HOST:-127.0.0.1} --port ${PORT:-3000}",
     "build": "pnpm run verify:node && next build",
     "start": "pnpm run verify:node && next start --hostname 0.0.0.0 --port ${PORT:-3000}",
@@ -21,7 +26,8 @@
     "test:all": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
     "quality:gate": "pnpm test:all",
     "db:compile-migrate": "tsc -p tsconfig.scripts.json",
-    "db:run-migrate": "node dist-scripts/scripts/run-migrations.js"
+    "db:run-migrate": "node dist-scripts/scripts/run-migrations.js",
+    "postinstall": "node -e \"try{require('better-sqlite3')}catch(e){if(e.code==='ERR_DLOPEN_FAILED'||/NODE_MODULE_VERSION/.test(e.message)){console.error('\\n⚠  better-sqlite3 compiled for wrong Node version. Run: pnpm rebuild better-sqlite3\\n');process.exit(1)}}\""
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

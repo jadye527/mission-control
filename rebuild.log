@@ -1,0 +1,29 @@
+==> Building MC...
+
+> mission-control@2.0.1 build /home/jasondye/openclaw-workspace/dashboard-mission-control
+> pnpm run verify:node && next build
+
+
+> mission-control@2.0.1 verify:node /home/jasondye/openclaw-workspace/dashboard-mission-control
+> node scripts/check-node-version.mjs
+
+▲ Next.js 16.1.6 (Turbopack)
+- Environments: .env.local, .env
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 42s
+  Running TypeScript ...
+Failed to compile.
+
+./src/lib/task-dispatch.ts:488:14
+Type error: Cannot find name 'dispatchModel'.
+
+[0m [90m 486 |[39m         [90m// which causes retry loops and stale in_progress tasks. Keep classification[39m
+ [90m 487 |[39m         [90m// logic in place for future compatibility, but do not send it here.[39m
+[31m[1m>[22m[39m[90m 488 |[39m         [36mvoid[39m dispatchModel
+ [90m     |[39m              [31m[1m^[22m[39m
+ [90m 489 |[39m         [90m// Model overrides are not supported by the gateway for agent="main".[39m
+ [90m 490 |[39m         [90m// Let each agent use its own configured default model.[39m
+ [90m 491 |[39m[0m
+Next.js build worker exited with code: 1 and signal: null
+ ELIFECYCLE  Command failed with exit code 1.

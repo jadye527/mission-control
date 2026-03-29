@@ -8,10 +8,11 @@ import { logger } from './logger'
 import { runOpenClaw } from './command'
 import { processWebhookRetries } from './webhooks'
 import { syncClaudeSessions } from './claude-sessions'
-import { pruneGatewaySessionsOlderThan } from './sessions'
+import { pruneGatewaySessionsOlderThan, getAgentLiveStatuses } from './sessions'
+import { eventBus } from './event-bus'
 import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
-import { dispatchAssignedTasks, runAegisReviews } from './task-dispatch'
+import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks } from './task-dispatch'
 import { spawnRecurringTasks } from './recurring-tasks'
 import { runInboxTriage } from './inbox-triage'
 
@@ -259,6 +260,64 @@ async function runHeartbeatCheck(): Promise<{ ok: boolean; message: string }> {
   }
 }
 
+/** Sync live agent statuses from gateway session files into the DB */
+async function syncAgentLiveStatuses(): Promise<number> {
+  const liveStatuses = getAgentLiveStatuses()
+  if (liveStatuses.size === 0) return 0
+
+  const db = getDatabase()
+  const agents = db.prepare('SELECT id, name, config FROM agents').all() as Array<{
+    id: number; name: string; config: string | null
+  }>
+
+  const update = db.prepare('UPDATE agents SET status = ?, last_seen = ?, last_activity = ?, updated_at = ? WHERE id = ?')
+  let refreshed = 0
+
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+
+  db.transaction(() => {
+    for (const agent of agents) {
+      // Match by agent name or openclawId from config
+      let openclawId: string | null = null
+      if (agent.config) {
+        try {
+          const cfg = JSON.parse(agent.config)
+          if (typeof cfg.openclawId === 'string' && cfg.openclawId.trim()) {
+            openclawId = cfg.openclawId.trim()
+          }
+        } catch { /* ignore */ }
+      }
+
+      const candidates = [openclawId, agent.name].filter(Boolean).map(s => normalize(s!))
+      let matched: { status: 'active' | 'idle' | 'offline'; lastActivity: number; channel: string } | undefined
+
+      for (const [sessionAgent, info] of liveStatuses) {
+        if (candidates.includes(normalize(sessionAgent))) {
+          matched = info
+          break
+        }
+      }
+
+      if (!matched || matched.status === 'offline') continue
+
+      const now = Math.floor(Date.now() / 1000)
+      const activity = `Gateway session (${matched.channel || 'unknown'})`
+      update.run(matched.status, now, activity, now, agent.id)
+      refreshed++
+
+      eventBus.broadcast('agent.status_changed', {
+        id: agent.id,
+        name: agent.name,
+        status: matched.status,
+        last_seen: now,
+        last_activity: activity,
+      })
+    }
+  })()
+
+  return refreshed
+}
+
 const DAILY_MS = 24 * 60 * 60 * 1000
 const FIVE_MINUTES_MS = 5 * 60 * 1000
 const TICK_MS = 60 * 1000 // Check every minute
@@ -377,6 +436,15 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('stale_task_requeue', {
+    name: 'Stale Task Requeue',
+    intervalMs: TICK_MS, // Every 60s — check for stale in_progress tasks
+    lastRun: null,
+    nextRun: now + 25_000, // First check 25s after startup
+    enabled: true,
+    running: false,
+  })
+
   tasks.set('inbox_triage', {
     name: 'Inbox Triage',
     intervalMs: 30 * 60 * 1000, // Every 30 minutes
@@ -429,10 +497,11 @@ async function tick() {
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
+      : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'inbox_triage' ? 'general.inbox_triage'
       : id === 'openclaw_backup' ? 'general.openclaw_backup_enabled'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'inbox_triage'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'inbox_triage'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
 
     task.running = true
@@ -443,10 +512,18 @@ async function tick() {
         : id === 'claude_session_scan' ? await syncClaudeSessions()
         : id === 'skill_sync' ? await syncSkillsFromDisk()
         : id === 'local_agent_sync' ? await syncLocalAgents()
-        : id === 'gateway_agent_sync' ? await syncAgentsFromConfig('scheduled').then(r => ({ ok: true, message: `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total` }))
-        : id === 'task_dispatch' ? await dispatchAssignedTasks()
+        : id === 'gateway_agent_sync' ? await syncAgentsFromConfig('scheduled').then(async r => {
+            const refreshed = await syncAgentLiveStatuses()
+            return { ok: true, message: `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total | Live status: ${refreshed} refreshed` }
+          })
+        : id === 'task_dispatch' ? await autoRouteInboxTasks().then(async (routeResult) => {
+            const dispatchResult = await dispatchAssignedTasks()
+            const parts = [routeResult.message, dispatchResult.message].filter(m => m && !m.includes('No '))
+            return { ok: routeResult.ok && dispatchResult.ok, message: parts.join(' | ') || 'No tasks to route or dispatch' }
+          })
         : id === 'aegis_review' ? await runAegisReviews()
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
+        : id === 'stale_task_requeue' ? await requeueStaleTasks()
         : id === 'inbox_triage' ? await runInboxTriage()
         : id === 'openclaw_backup' ? await runOpenClawBackup()
         : await runCleanup()
@@ -484,10 +561,11 @@ export function getSchedulerStatus() {
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
+      : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : id === 'inbox_triage' ? 'general.inbox_triage'
       : id === 'openclaw_backup' ? 'general.openclaw_backup_enabled'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'inbox_triage'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue' || id === 'inbox_triage'
     result.push({
       id,
       name: task.name,
@@ -512,9 +590,10 @@ export async function triggerTask(taskId: string): Promise<{ ok: boolean; messag
   if (taskId === 'skill_sync') return syncSkillsFromDisk()
   if (taskId === 'local_agent_sync') return syncLocalAgents()
   if (taskId === 'gateway_agent_sync') return syncAgentsFromConfig('manual').then(r => ({ ok: true, message: `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total` }))
-  if (taskId === 'task_dispatch') return dispatchAssignedTasks()
+  if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const d = await dispatchAssignedTasks(); return { ok: r.ok && d.ok, message: [r.message, d.message].filter(m => m && !m.includes('No ')).join(' | ') || 'No tasks' } })
   if (taskId === 'aegis_review') return runAegisReviews()
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
+  if (taskId === 'stale_task_requeue') return requeueStaleTasks()
   if (taskId === 'inbox_triage') return runInboxTriage()
   if (taskId === 'openclaw_backup') return runOpenClawBackup()
   return { ok: false, message: `Unknown task: ${taskId}` }

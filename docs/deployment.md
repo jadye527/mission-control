@@ -77,21 +77,46 @@ What `deploy:standalone` does:
 ## Production (Docker)
 
 ```bash
+docker compose up          # with gateway connectivity
+docker compose --profile standalone up   # without gateway (standalone mode)
+```
+
+Or build and run manually:
+
+```bash
 docker build -t mission-control .
 docker run -p 3000:3000 \
   -v mission-control-data:/app/.data \
   -e AUTH_USER=admin \
   -e AUTH_PASS=your-secure-password \
   -e API_KEY=your-api-key \
+  -e OPENCLAW_GATEWAY_HOST=host.docker.internal \
+  --add-host=host.docker.internal:host-gateway \
   mission-control
 ```
 
 The Docker image:
-- Builds from `node:20-slim` with multi-stage build
+- Builds from `node:22-slim` with multi-stage build
 - Compiles `better-sqlite3` natively inside the container (Linux x64)
 - Uses Next.js standalone output for minimal image size
 - Runs as non-root user `nextjs`
 - Exposes port 3000 (override with `-e PORT=8080`)
+
+### Gateway Connectivity from Docker
+
+MC inside Docker needs to reach the gateway running on the host. There are **two** connections:
+
+1. **Server-side** (MC backend → gateway): Set `OPENCLAW_GATEWAY_HOST=host.docker.internal`.
+   Docker Desktop (macOS/Windows) resolves this automatically. On Linux, `docker-compose.yml`
+   maps it via `extra_hosts`.
+
+2. **Browser-side** (user's browser → gateway WebSocket): When the gateway host is a
+   Docker-internal name (like `host.docker.internal`), MC automatically rewrites the WebSocket
+   URL to the browser's own hostname. No extra config needed for local Docker usage.
+   For remote access, set `NEXT_PUBLIC_GATEWAY_HOST` to the public hostname.
+
+If your gateway runs in **another container**, put both on the same Docker network and set
+`OPENCLAW_GATEWAY_HOST` to the gateway container name.
 
 ### Persistent Data
 
@@ -100,6 +125,14 @@ SQLite database is stored in `/app/.data/` inside the container. Mount a volume 
 ```bash
 docker run -v /path/to/data:/app/.data ...
 ```
+
+### Production Hardening
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hardened.yml up -d
+```
+
+This adds: JSON logging, strict hostname allowlist, secure cookies, HSTS, internal-only network.
 
 ## Environment Variables
 
@@ -115,7 +148,94 @@ See `.env.example` for the full list. Key variables:
 | `OPENCLAW_HOME` | No | - | Path to OpenClaw installation |
 | `MC_ALLOWED_HOSTS` | No | `localhost,127.0.0.1` | Allowed hosts in production |
 
+## Kubernetes Sidecar Deployment
+
+When running Mission Control alongside a gateway as containers in the same pod (sidecar pattern), agents are not discovered via the filesystem. Instead, use the gateway's agent registration API.
+
+### Architecture
+
+```
+┌──────────────── Pod ────────────────┐
+│  ┌─────────┐     ┌───────────────┐  │
+│  │   MC    │◄───►│   Gateway     │  │
+│  │ :3000   │     │   :18789      │  │
+│  └─────────┘     └───────────────┘  │
+│       ▲                  ▲          │
+│       │ localhost         │          │
+│       └──────────────────┘          │
+└─────────────────────────────────────┘
+```
+
+### Required Configuration
+
+**Environment variables** for the MC container:
+
+```bash
+AUTH_USER=admin
+AUTH_PASS=<secure-password>
+API_KEY=<your-api-key>
+OPENCLAW_GATEWAY_HOST=127.0.0.1
+NEXT_PUBLIC_GATEWAY_PORT=18789
+```
+
+### Agent Registration
+
+The gateway must register its agents with MC on startup. Include the `agents` array in the gateway registration request:
+
+```bash
+curl -X POST http://localhost:3000/api/gateways \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "sidecar-gateway",
+    "host": "127.0.0.1",
+    "port": 18789,
+    "is_primary": true,
+    "agents": [
+      { "name": "developer-1", "role": "developer" },
+      { "name": "researcher-1", "role": "researcher" }
+    ]
+  }'
+```
+
+To update the agent list on reconnect, use `PUT /api/gateways` with the same `agents` field.
+
+Alternatively, each agent can register itself via the direct connection endpoint:
+
+```bash
+curl -X POST http://localhost:3000/api/connect \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool_name": "openclaw-gateway",
+    "agent_name": "developer-1",
+    "agent_role": "developer"
+  }'
+```
+
+### Health Checks
+
+Agents must send heartbeats to stay visible:
+
+```bash
+curl http://localhost:3000/api/agents/<agent-id>/heartbeat \
+  -H "Authorization: Bearer <API_KEY>"
+```
+
+Without heartbeats, agents will be marked offline after 10 minutes (configurable via `general.agent_timeout_minutes` setting).
+
 ## Troubleshooting
+
+### "Internal server error" on login / NODE_MODULE_VERSION mismatch
+
+`better-sqlite3` is a native addon compiled for a specific Node.js version.
+If you switch Node versions (e.g. via nvm), the compiled binary won't load.
+
+```bash
+pnpm rebuild better-sqlite3
+```
+
+The health endpoint (`/api/status?action=health`) will report this error explicitly.
 
 ### "Module not found: better-sqlite3"
 
@@ -125,6 +245,34 @@ sudo apt-get install -y python3 make g++
 rm -rf node_modules
 pnpm install
 ```
+
+### Docker: gateway unreachable / WebSocket not connecting
+
+**Checklist:**
+
+1. Verify the gateway is reachable from inside the container:
+   ```bash
+   docker exec mission-control curl -s http://host.docker.internal:18789
+   ```
+
+2. Check env vars are set:
+   ```bash
+   docker exec mission-control env | grep -i gateway
+   ```
+   You should see `OPENCLAW_GATEWAY_HOST=host.docker.internal`.
+
+3. If using a **mounted `~/.openclaw`** directory, the `openclaw.json` inside may have
+   `gateway.host = "127.0.0.1"` — this is the host's loopback, not reachable from the
+   container. Environment variables take precedence over `openclaw.json`, so set
+   `OPENCLAW_GATEWAY_HOST=host.docker.internal` in your `.env` or docker-compose.
+
+4. **Browser WebSocket**: MC automatically rewrites Docker-internal hostnames
+   (`host.docker.internal`, `host-gateway`) to the browser's hostname. If the browser
+   still can't connect, set `NEXT_PUBLIC_GATEWAY_HOST` to a hostname your browser can reach.
+
+5. **Linux-specific**: `host.docker.internal` requires Docker 20.10+. The `extra_hosts`
+   entry in `docker-compose.yml` handles this. If using `docker run` directly, add
+   `--add-host=host.docker.internal:host-gateway`.
 
 ### AUTH_PASS with "#" is not working
 
@@ -208,3 +356,14 @@ Then point UI to:
 ```bash
 NEXT_PUBLIC_GATEWAY_URL=wss://your-domain.com/gateway-ws
 ```
+
+Mission Control now retries common reverse-proxy websocket paths (`/gateway-ws`, `/gw`) automatically when root-path handshake fails, but setting `NEXT_PUBLIC_GATEWAY_URL` is still recommended for deterministic production behavior.
+
+## Next Steps
+
+Once deployed, set up your agents and orchestration:
+
+- **[Quickstart](quickstart.md)** — Register your first agent and complete a task in 5 minutes
+- **[Agent Setup](agent-setup.md)** — SOUL personalities, heartbeats, config sync, agent sources
+- **[Orchestration Patterns](orchestration.md)** — Auto-dispatch, quality review, multi-agent workflows
+- **[CLI Reference](cli-agent-control.md)** — Full CLI command list for headless/scripted usage

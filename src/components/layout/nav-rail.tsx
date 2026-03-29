@@ -49,6 +49,7 @@ const navGroups: NavGroup[] = [
       { id: 'agent-performance', label: 'Performance', icon: <PerformanceIcon />, priority: false },
       { id: 'exec-approvals', label: 'Approvals', icon: <ApprovalsIcon />, priority: false },
       { id: 'office', label: 'Office', icon: <OfficeIcon />, priority: false },
+      { id: 'monitor', label: 'Monitor', icon: <MonitorIcon />, priority: false },
     ],
   },
   {
@@ -1575,6 +1576,16 @@ function PerformanceIcon() {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="1,12 5,6 9,9 15,3" />
       <polyline points="11,3 15,3 15,7" />
+    </svg>
+  )
+}
+
+function MonitorIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1" y="2" width="14" height="10" rx="1.5" />
+      <polyline points="4,9 6,6 8,8 12,4" />
+      <path d="M5 14h6" />
     </svg>
   )
 }

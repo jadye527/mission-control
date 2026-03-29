@@ -1,8 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto'
 import { getDatabase } from './db'
-import { hashPassword, verifyPassword } from './password'
+import { hashPassword, verifyPassword, verifyPasswordWithRehashCheck } from './password'
 import { logSecurityEvent } from './security-events'
 import { parseMcSessionCookieHeader } from './session-cookie'
+
+// Trusted IPs for proxy auth header (comma-separated)
+const PROXY_AUTH_TRUSTED_IPS = new Set(
+  (process.env.MC_PROXY_AUTH_TRUSTED_IPS || '').split(',').map(s => s.trim()).filter(Boolean)
+)
 
 // Plugin hook: extensions can register a custom API key resolver without modifying this file.
 type AuthResolverHook = (apiKey: string, agentName: string | null) => User | null
@@ -267,10 +272,11 @@ export function createSession(
   const resolvedWorkspaceId = membership?.workspace_id || workspaceId || ((db.prepare('SELECT workspace_id FROM users WHERE id = ?').get(userId) as { workspace_id?: number } | undefined)?.workspace_id || getDefaultWorkspaceContext().workspaceId)
   const resolvedTenantId = membership?.tenant_id || resolveTenantForWorkspace(resolvedWorkspaceId)
 
+  const tokenHash = hashSessionToken(token)
   db.prepare(`
     INSERT INTO user_sessions (token, user_id, expires_at, ip_address, user_agent, workspace_id, tenant_id)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(token, userId, expiresAt, ipAddress || null, userAgent || null, resolvedWorkspaceId, resolvedTenantId)
+  `).run(tokenHash, userId, expiresAt, ipAddress || null, userAgent || null, resolvedWorkspaceId, resolvedTenantId)
 
   // Update user's last login
   db.prepare('UPDATE users SET last_login_at = ?, updated_at = ?, workspace_id = ? WHERE id = ?').run(now, now, resolvedWorkspaceId, userId)
@@ -285,6 +291,7 @@ export function validateSession(token: string): (User & { sessionId: number }) |
   if (!token) return null
   const db = getDatabase()
   const now = Math.floor(Date.now() / 1000)
+  const tokenHash = hashSessionToken(token)
 
   const row = db.prepare(`
     SELECT u.id, u.username, u.display_name, u.role, u.provider, u.email, u.avatar_url, u.is_approved,
@@ -296,7 +303,7 @@ export function validateSession(token: string): (User & { sessionId: number }) |
     JOIN users u ON u.id = s.user_id
     LEFT JOIN workspaces w ON w.id = COALESCE(s.workspace_id, u.workspace_id, 1)
     WHERE s.token = ? AND s.expires_at > ?
-  `).get(token, now) as SessionQueryRow | undefined
+  `).get(tokenHash, now) as SessionQueryRow | undefined
 
   if (!row) return null
   const hydrated = hydrateUserFromRow({
@@ -322,7 +329,8 @@ export function validateSession(token: string): (User & { sessionId: number }) |
 
 export function destroySession(token: string): void {
   const db = getDatabase()
-  db.prepare('DELETE FROM user_sessions WHERE token = ?').run(token)
+  const tokenHash = hashSessionToken(token)
+  db.prepare('DELETE FROM user_sessions WHERE token = ?').run(tokenHash)
 }
 
 export function destroyAllUserSessions(userId: number): void {
@@ -362,9 +370,17 @@ export function authenticateUser(username: string, password: string): User | nul
     try { logSecurityEvent({ event_type: 'auth_failure', severity: 'warning', source: 'auth', detail: JSON.stringify({ username, reason: 'not_approved' }), workspace_id: 1, tenant_id: 1 }) } catch {}
     return null
   }
-  if (!verifyPassword(password, row.password_hash)) {
+  const { valid, needsRehash } = verifyPasswordWithRehashCheck(password, row.password_hash)
+  if (!valid) {
     try { logSecurityEvent({ event_type: 'auth_failure', severity: 'warning', source: 'auth', detail: JSON.stringify({ username, reason: 'invalid_password' }), workspace_id: 1, tenant_id: 1 }) } catch {}
     return null
+  }
+  // Progressive rehash: upgrade hash to current scrypt cost on successful login
+  if (needsRehash) {
+    try {
+      db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
+        .run(hashPassword(password), Math.floor(Date.now() / 1000), row.id)
+    } catch { /* non-fatal — will rehash on next login */ }
   }
   return hydrateUserFromRow(row, row.workspace_id || getDefaultWorkspaceContext().workspaceId)
 }
@@ -911,12 +927,32 @@ export function getUserFromRequest(request: Request): User | null {
   // When the gateway has already authenticated the user and injects their username
   // as a trusted header (e.g. X-Auth-Username from Envoy OIDC claimToHeaders),
   // skip the local login form entirely.
+  // SECURITY: MC_PROXY_AUTH_TRUSTED_IPS must be set to restrict which IPs can send
+  // the proxy auth header. Without it, any client reaching MC directly could spoof
+  // the header and impersonate any user.
   const proxyAuthHeader = (process.env.MC_PROXY_AUTH_HEADER || '').trim()
   if (proxyAuthHeader) {
-    const proxyUsername = (request.headers.get(proxyAuthHeader) || '').trim()
-    if (proxyUsername) {
-      const user = resolveOrProvisionProxyUser(proxyUsername)
-      if (user) return { ...user, agent_name: agentName }
+    const trustedIps = PROXY_AUTH_TRUSTED_IPS
+    if (trustedIps.size > 0) {
+      const clientIp = request.headers.get('x-real-ip')?.trim()
+        || request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+        || ''
+      if (!trustedIps.has(clientIp)) {
+        // Request not from trusted proxy — ignore the proxy auth header
+      } else {
+        const proxyUsername = (request.headers.get(proxyAuthHeader) || '').trim()
+        if (proxyUsername) {
+          const user = resolveOrProvisionProxyUser(proxyUsername)
+          if (user) return { ...user, agent_name: agentName }
+        }
+      }
+    } else {
+      // No trusted IPs configured — log warning and still allow (backward compat)
+      const proxyUsername = (request.headers.get(proxyAuthHeader) || '').trim()
+      if (proxyUsername) {
+        const user = resolveOrProvisionProxyUser(proxyUsername)
+        if (user) return { ...user, agent_name: agentName }
+      }
     }
   }
 
@@ -933,6 +969,20 @@ export function getUserFromRequest(request: Request): User | null {
   const configuredApiKey = resolveActiveApiKey()
 
   if (configuredApiKey && apiKey && safeCompare(apiKey, configuredApiKey)) {
+    // FR-D2: Log warning when global admin API key is used.
+    // Prefer agent-scoped keys (POST /api/agents/{id}/keys) for least-privilege access.
+    try {
+      logSecurityEvent({
+        event_type: 'global_api_key_used',
+        severity: 'info',
+        source: 'auth',
+        agent_name: agentName || undefined,
+        detail: JSON.stringify({ hint: 'Consider using agent-scoped API keys for least-privilege access' }),
+        ip_address: request.headers.get('x-real-ip') || 'unknown',
+        workspace_id: getDefaultWorkspaceContext().workspaceId,
+        tenant_id: getDefaultWorkspaceContext().tenantId,
+      })
+    } catch { /* startup race */ }
     return {
       id: 0,
       username: 'api',
@@ -1094,6 +1144,10 @@ function extractApiKeyFromHeaders(headers: Headers): string | null {
 
 function hashApiKey(rawKey: string): string {
   return createHash('sha256').update(rawKey).digest('hex')
+}
+
+function hashSessionToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken).digest('hex')
 }
 
 function parseAgentScopes(raw: string): Set<string> {

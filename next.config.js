@@ -23,7 +23,7 @@ const nextConfig = {
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
           // Prevent browser from caching HTML pages so rebuilds pick up new JS chunks
           { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
-          ...(process.env.MC_ENABLE_HSTS === '1' ? [
+          ...(process.env.NODE_ENV === 'production' && process.env.MC_DISABLE_HSTS !== '1' || process.env.MC_ENABLE_HSTS === '1' ? [
             { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' }
           ] : []),
         ],

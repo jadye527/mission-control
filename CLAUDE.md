@@ -75,6 +75,31 @@ Database path: `MISSION_CONTROL_DB_PATH` (defaults to `.data/mission-control.db`
 - **Icons**: No icon libraries -- use raw text/emoji in components
 - **Standalone output**: `next.config.js` sets `output: 'standalone'`
 
+## Agent Control Interfaces
+
+Mission Control provides three interfaces for autonomous agents:
+
+### MCP Server (recommended for agents)
+```bash
+# Add to any Claude Code agent:
+claude mcp add mission-control -- node /path/to/mission-control/scripts/mc-mcp-server.cjs
+
+# Environment config:
+MC_URL=http://127.0.0.1:3000 MC_API_KEY=<key>
+```
+35 tools: agents, tasks, sessions, memory, soul, comments, tokens, skills, cron, status.
+See `docs/cli-agent-control.md` for full tool list.
+
+### CLI
+```bash
+pnpm mc agents list --json
+pnpm mc tasks queue --agent Aegis --max-capacity 2 --json
+pnpm mc events watch --types agent,task
+```
+
+### REST API
+OpenAPI spec: `openapi.json`. Interactive docs at `/docs` when running.
+
 ## Common Pitfalls
 
 - **Production deploy**: ALWAYS use `bash scripts/rebuild.sh`. Never run `pnpm build` alone — static assets won't be copied and the browser will show "Application error" from stale JS chunks.

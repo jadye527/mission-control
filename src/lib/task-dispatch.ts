@@ -37,7 +37,7 @@ function resolveGatewayAgentId(task: DispatchableTask): string {
   return task.agent_name
 }
 
-function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | null): string {
+function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | null, persistentSession?: boolean): string {
   const ticket = task.ticket_prefix && task.project_ticket_no
     ? `${task.ticket_prefix}-${String(task.project_ticket_no).padStart(3, '0')}`
     : `TASK-${task.id}`
@@ -72,6 +72,16 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
       rejectionFeedback,
       '',
       'Do not resubmit without addressing the feedback above.',
+    )
+  }
+
+  if (persistentSession) {
+    lines.push(
+      '',
+      '## Long-Running Task Signal',
+      'This task runs in a persistent session. When your work is fully complete, signal completion by posting a task comment that starts with exactly:',
+      '`RESOLUTION: <your full deliverable text here>`',
+      'Do not post RESOLUTION: until the work is done.',
     )
   }
 
@@ -448,9 +458,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       `).get(task.id) as { content: string } | undefined
       const rejectionFeedback = rejectionRow?.content?.replace(/^Quality Review Rejected:\n?/, '') || null
 
-      const prompt = buildTaskPrompt(task, rejectionFeedback)
-
-      // Check if task has a target session specified in metadata
+      // Check if task has a target session specified in metadata (needed before buildTaskPrompt)
       const taskMeta = (() => {
         try {
           const row = db.prepare('SELECT metadata FROM tasks WHERE id = ?').get(task.id) as { metadata: string } | undefined
@@ -460,6 +468,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       const targetSession: string | null = typeof taskMeta?.target_session === 'string' && taskMeta.target_session
         ? taskMeta.target_session
         : null
+
+      const prompt = buildTaskPrompt(task, rejectionFeedback, !!targetSession)
 
       let agentResponse: AgentResponseParsed
 
@@ -480,11 +490,27 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         if (status !== 'started' && status !== 'ok' && status !== 'in_flight') {
           throw new Error(`chat.send to session ${targetSession} returned status: ${status}`)
         }
-        // chat.send is fire-and-forget; we record the session but won't get inline response text
-        agentResponse = {
-          text: `Task dispatched to existing session ${targetSession}. The agent will process it within that session context.`,
-          sessionId: sendResult?.runId || targetSession,
+        // chat.send is fire-and-forget — keep task in_progress, wait for explicit RESOLUTION: signal.
+        // Do NOT fall through to the review/Aegis path: the fire-and-forget confirmation text is
+        // not a deliverable and would cause an infinite Aegis bounce loop.
+        const nowSec = Math.floor(Date.now() / 1000)
+        const updatedMeta = {
+          ...taskMeta,
+          persistent_session: true,
+          dispatched_to_session: targetSession,
+          session_dispatched_at: nowSec,
         }
+        db.prepare('UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ?')
+          .run(JSON.stringify(updatedMeta), nowSec, task.id)
+
+        db.prepare(`
+          INSERT INTO comments (task_id, author, content, created_at, workspace_id)
+          VALUES (?, 'scheduler', ?, ?, ?)
+        `).run(task.id, `Task dispatched to session ${targetSession}. Waiting for RESOLUTION: signal from agent.`, nowSec, task.workspace_id)
+
+        recordSuccess(task.id)
+        logger.info({ taskId: task.id, targetSession }, 'Persistent session dispatch — staying in_progress, skipping Aegis')
+        continue
       } else {
         // Step 1: Invoke via gateway (new session)
         const gatewayAgentId = resolveGatewayAgentId(task)
